@@ -1,0 +1,618 @@
+// © javierberastegui
+//@version=6
+// =====================================================================================
+//  QRCM Structure Range Context V1.4.1
+//  Contexto estructural MTF para operar soporte/resistencia con lectura humana.
+//
+//  - Timeframes fijos por defecto: 15m / 1H / 4H / 1D / 1W-1M.
+//  - S/R automático horizontal: pivotes confirmados, toques separados y reacción ATR.
+//  - Solo dibuja 1 soporte operativo y 1 resistencia operativa.
+//  - Rango manual persistente con líneas extendidas a la derecha.
+//  - Panel Mobile real: compacto, texto tiny y sin depender del margen derecho.
+//  - Alertas JSON estructuradas con alert() al cierre por defecto.
+//  - No repaint: security lookahead_off, pivotes confirmados y ruptura por cierre.
+// =====================================================================================
+indicator("QRCM Structure Range Context Panel V1.4.1", "QRCM SRC Panel", overlay = false, max_lines_count = 20, max_boxes_count = 10, max_labels_count = 20)
+
+// =====================================================================================
+//  INPUTS
+// =====================================================================================
+gGEN = "General"
+showPanel       = input.bool(true, "Mostrar panel", group = gGEN)
+panelMode       = input.string("Simple", "Modo panel", options = ["Mobile", "Simple", "Full", "Debug"], group = gGEN)
+panelPosition   = input.string("Top Right", "Posición desktop", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group = gGEN)
+mobilePosition  = input.string("Top Left", "Posición Mobile", options = ["Top Left", "Bottom Left", "Top Right", "Bottom Right"], group = gGEN)
+textSizeDesktop = input.string("Small", "Texto desktop", options = ["Tiny", "Small", "Normal", "Large"], group = gGEN)
+mobileCompact   = input.bool(true, "Mobile compacto 1 columna", group = gGEN)
+mobileTextStyle = input.string("Ultra corto", "Texto Mobile", options = ["Ultra corto", "Normal"], group = gGEN)
+panelOnlyMode   = input.bool(true, "Modo solo panel/tabla (sin S/R visual)", group = gGEN)
+
+// --- Timeframes fijos ----------------------------------------------------------------
+gTF = "Timeframes fijos"
+tfTiming     = input.timeframe("15", "Timing", group = gTF)
+tfOperative  = input.timeframe("60", "Operativo", group = gTF)
+tfHTF        = input.timeframe("240", "HTF jefe", group = gTF)
+tfDaily      = input.timeframe("D", "Diario", group = gTF)
+tfMacro      = input.timeframe("W", "Macro", options = ["W", "M"], group = gTF)
+useChartTimeframeAsOperative = input.bool(false, "Usar timeframe del gráfico como operativo", group = gTF)
+confirmHTF = input.bool(true, "Confirmar HTF (usar vela HTF cerrada)", group = gTF)
+
+// --- S/R -----------------------------------------------------------------------------
+gSR = "Soporte / Resistencia"
+rangeSource = input.string("Auto SR", "Fuente rango", options = ["Auto SR", "Manual SR", "Sin S/R, solo contexto MTF"], group = gSR)
+useManualRange = input.bool(false, "Activar rango manual", group = gSR)
+manualSupport = input.price(0.0, "Soporte manual", confirm = true, group = gSR)
+manualResistance = input.price(0.0, "Resistencia manual", confirm = true, group = gSR)
+manualLineBackBars = input.int(500, "Manual: barras hacia atrás", minval = 50, group = gSR)
+srLookback = input.int(150, "Auto: lookback pivotes", minval = 50, maxval = 1000, group = gSR)
+autoSrMode = input.string("Ligero / Preciso", "Auto: modo", options = ["Ligero / Preciso", "Preciso (solo última vela)"], group = gSR)
+maxSrCandidates = input.int(30, "Auto: candidatos máximos", minval = 5, maxval = 60, group = gSR)
+minTouches = input.int(2, "Auto: toques mínimos", minval = 1, maxval = 10, group = gSR)
+minReactions = input.int(1, "Auto: reacciones mínimas", minval = 0, maxval = 10, group = gSR)
+touchToleranceATR = input.float(0.35, "Auto: tolerancia toque ATR", minval = 0.05, step = 0.05, group = gSR)
+reactionATR = input.float(0.75, "Auto: reacción mínima ATR", minval = 0.05, step = 0.05, group = gSR)
+minBarsBetweenTouches = input.int(10, "Auto: barras mín. entre toques", minval = 1, group = gSR)
+maxLevelsToDraw = input.int(2, "Máx. niveles a dibujar", minval = 2, maxval = 2, group = gSR)
+
+// --- Ruptura / zona ------------------------------------------------------------------
+gBR = "Zona y ruptura"
+atrLen = input.int(14, "ATR", minval = 1, group = gBR)
+breakoutConfirmBars = input.int(1, "Barras confirmación ruptura", minval = 1, maxval = 3, group = gBR)
+breakoutVolumeMult = input.float(1.2, "Volumen relativo ruptura", minval = 0.1, step = 0.1, group = gBR)
+breakoutCloseBufferATR = input.float(0.15, "Buffer cierre ruptura ATR", minval = 0.0, step = 0.05, group = gBR)
+volLen = input.int(20, "Volumen medio", minval = 1, group = gBR)
+
+// --- Motor ---------------------------------------------------------------------------
+gENG = "Motor estructural"
+emaFastLen = input.int(21, "EMA rápida", minval = 1, group = gENG)
+emaSlowLen = input.int(55, "EMA lenta", minval = 1, group = gENG)
+adxLen = input.int(14, "ADX", minval = 1, group = gENG)
+kerLen = input.int(20, "KER", minval = 2, group = gENG)
+chopLen = input.int(14, "CHOP", minval = 2, group = gENG)
+pivotLeft = input.int(3, "Pivote izq.", minval = 1, group = gENG)
+pivotRight = input.int(3, "Pivote der.", minval = 1, group = gENG)
+strongTrend = input.float(45, "Umbral direccional fuerte", minval = 1, group = gENG)
+weakTrend = input.float(18, "Umbral direccional débil", minval = 1, group = gENG)
+
+// --- Visual --------------------------------------------------------------------------
+gVIS = "Visual S/R"
+showSR = input.bool(false, "Mostrar S/R", group = gVIS)
+srStyle = input.string("Line", "Estilo S/R", options = ["Line", "Zone"], group = gVIS)
+srExtendRight = input.bool(true, "Extender derecha", group = gVIS)
+srHistoryBars = input.int(150, "Barras visibles S/R", minval = 20, group = gVIS)
+showLabels = input.bool(false, "Mostrar etiquetas", group = gVIS)
+
+// --- Alertas -------------------------------------------------------------------------
+gAL = "Alertas JSON"
+enableAlerts = input.bool(true, "Habilitar alertas", group = gAL)
+alertsOnClose = input.bool(true, "Solo cierre de vela", group = gAL)
+
+// =====================================================================================
+//  CONSTANTES Y HELPERS
+// =====================================================================================
+color colBuy = #16a34a
+color colSell = #dc2626
+color colWarn = #f59e0b
+color colInfo = #38bdf8
+color colNeutral = #94a3b8
+color bgPanel = #0e0f13
+color bgHeader = #1a1c22
+color txtMain = #e6e6e6
+color txtMuted = #b8bcc4
+
+f_pos(string p) =>
+    p == "Top Left" ? position.top_left : p == "Bottom Left" ? position.bottom_left : p == "Bottom Right" ? position.bottom_right : p == "Middle Right" ? position.middle_right : position.top_right
+
+f_size(string s) =>
+    s == "Tiny" ? size.tiny : s == "Normal" ? size.normal : s == "Large" ? size.large : size.small
+
+f_ker(float src, int len) =>
+    float num = math.abs(src - src[len])
+    float den = math.sum(math.abs(src - src[1]), len)
+    den != 0.0 ? num / den : 0.0
+
+f_chop(int len) =>
+    float trSum = math.sum(ta.tr(true), len)
+    float rng = ta.highest(high, len) - ta.lowest(low, len)
+    rng > 0 ? 100.0 * math.log10(trSum / rng) / math.log10(len) : 100.0
+
+f_jsonEscape(string s) =>
+    str.replace_all(s, '"', "'")
+
+// =====================================================================================
+//  MTF: bias + estructura + fase numérica sin strings dentro de security
+//  dir: -1 bajista, 0 neutral, 1 alcista. phase: 1 impulso,2 pullback,3 rango,4 freno,
+//  5 ruptura,6 test soporte,7 test resistencia.
+// =====================================================================================
+f_tfMetrics() =>
+    float emaF = ta.ema(close, emaFastLen)
+    float emaS = ta.ema(close, emaSlowLen)
+    float atr = ta.atr(atrLen)
+    [diP, diM, adxV] = ta.dmi(adxLen, adxLen)
+    float kerV = f_ker(close, kerLen)
+    float chopV = f_chop(chopLen)
+    float ph = ta.pivothigh(high, pivotLeft, pivotRight)
+    float pl = ta.pivotlow(low, pivotLeft, pivotRight)
+    float lastPH = ta.valuewhen(not na(ph), ph, 0)
+    float prevPH = ta.valuewhen(not na(ph), ph, 1)
+    float lastPL = ta.valuewhen(not na(pl), pl, 0)
+    float prevPL = ta.valuewhen(not na(pl), pl, 1)
+    bool hh = lastPH > prevPH
+    bool hl = lastPL > prevPL
+    bool lh = lastPH < prevPH
+    bool ll = lastPL < prevPL
+    float structScore = (hh and hl) ? 40.0 : (lh and ll) ? -40.0 : (hh or hl) ? 18.0 : (lh or ll) ? -18.0 : 0.0
+    float emaScore = close > emaF and emaF > emaS ? 28.0 : close < emaF and emaF < emaS ? -28.0 : close > emaS ? 10.0 : close < emaS ? -10.0 : 0.0
+    float adxScore = (diP > diM ? 1.0 : -1.0) * math.min(adxV, 50.0) / 50.0 * 22.0
+    float kerScore = (close > close[kerLen] ? 1.0 : -1.0) * math.min(kerV, 1.0) * 10.0
+    float chopPenalty = chopV > 61.8 ? 0.45 : chopV > 55 ? 0.70 : 1.0
+    float bias = (structScore + emaScore + adxScore + kerScore) * chopPenalty
+    bias := math.max(math.min(bias, 100.0), -100.0)
+    int dir = bias > weakTrend ? 1 : bias < -weakTrend ? -1 : 0
+    bool directional = adxV >= 20 and kerV >= 0.28 and chopV < 61.8
+    int phase = 3
+    if directional and math.abs(bias) >= strongTrend
+        phase := 1
+    if dir == 1 and close < emaF and close > emaS
+        phase := 2
+    if dir == -1 and close > emaF and close < emaS
+        phase := 2
+    if chopV > 61.8
+        phase := 3
+    if dir == 1 and close < close[1] and close > lastPL
+        phase := 4
+    if dir == -1 and close > close[1] and close < lastPH
+        phase := 4
+    bool breakUp = not na(lastPH) and close > lastPH and close[1] <= lastPH
+    bool breakDn = not na(lastPL) and close < lastPL and close[1] >= lastPL
+    if breakUp or breakDn
+        phase := 5
+    [bias, dir, phase, adxV, kerV, chopV, lastPH, lastPL]
+
+f_tfMetricsConfirmed() =>
+    [bias, dir, phase, adxV, kerV, chopV, lastPH, lastPL] = f_tfMetrics()
+    [bias[1], dir[1], phase[1], adxV[1], kerV[1], chopV[1], lastPH[1], lastPL[1]]
+
+f_sec(string tf) =>
+    request.security(syminfo.tickerid, tf, confirmHTF ? f_tfMetricsConfirmed() : f_tfMetrics(), lookahead = barmerge.lookahead_off)
+
+string tfOp = useChartTimeframeAsOperative ? timeframe.period : tfOperative
+[b15, d15, p15, adx15, ker15, chop15, ph15, pl15] = f_sec(tfTiming)
+[b1h, d1h, p1h, adx1h, ker1h, chop1h, ph1h, pl1h] = f_sec(tfOp)
+[b4h, d4h, p4h, adx4h, ker4h, chop4h, ph4h, pl4h] = f_sec(tfHTF)
+[b1d, d1d, p1d, adx1d, ker1d, chop1d, ph1d, pl1d] = f_sec(tfDaily)
+[bMac, dMac, pMac, adxMac, kerMac, chopMac, phMac, plMac] = f_sec(tfMacro)
+
+// =====================================================================================
+//  S/R AUTOMÁTICO HORIZONTAL V1.4.1: candidatos incrementales sin doble bucle
+// =====================================================================================
+float atrNow = ta.atr(atrLen)
+float tol = atrNow * touchToleranceATR
+float volRel = volume / math.max(ta.sma(volume, volLen), 1.0)
+float phAuto = ta.pivothigh(high, pivotLeft, pivotRight)
+float plAuto = ta.pivotlow(low, pivotLeft, pivotRight)
+
+var array<float> supportLevelsArr = array.new<float>()
+var array<int> supportTouchesArr = array.new<int>()
+var array<int> supportReactionsArr = array.new<int>()
+var array<int> supportLastTouchBarArr = array.new<int>()
+var array<int> supportCreatedBarArr = array.new<int>()
+
+var array<float> resistanceLevelsArr = array.new<float>()
+var array<int> resistanceTouchesArr = array.new<int>()
+var array<int> resistanceReactionsArr = array.new<int>()
+var array<int> resistanceLastTouchBarArr = array.new<int>()
+var array<int> resistanceCreatedBarArr = array.new<int>()
+
+f_trimCandidates(array<float> levels, array<int> touches, array<int> reactions, array<int> lastBars, array<int> createdBars, int maxCount) =>
+    while array.size(levels) > maxCount
+        array.shift(levels)
+        array.shift(touches)
+        array.shift(reactions)
+        array.shift(lastBars)
+        array.shift(createdBars)
+
+f_upsertLevel(array<float> levels, array<int> touches, array<int> reactions, array<int> lastBars, array<int> createdBars, float lvl, bool isSupport) =>
+    if not na(lvl)
+        float pivotAtr = nz(atrNow[pivotRight], atrNow)
+        float mergeTol = pivotAtr * touchToleranceATR
+        int found = na
+        if array.size(levels) > 0
+            for j = 0 to array.size(levels) - 1
+                if na(found) and math.abs(array.get(levels, j) - lvl) <= mergeTol
+                    found := j
+        int pivotBar = bar_index - pivotRight
+        if na(found)
+            array.push(levels, lvl)
+            array.push(touches, 1)
+            array.push(reactions, 0)
+            array.push(lastBars, pivotBar)
+            array.push(createdBars, pivotBar)
+            f_trimCandidates(levels, touches, reactions, lastBars, createdBars, maxSrCandidates)
+        else
+            float old = array.get(levels, found)
+            int oldTouches = array.get(touches, found)
+            array.set(levels, found, (old * oldTouches + lvl) / (oldTouches + 1))
+            if pivotBar - array.get(lastBars, found) >= minBarsBetweenTouches
+                array.set(touches, found, oldTouches + 1)
+                array.set(lastBars, found, pivotBar)
+
+f_updateTouches(array<float> levels, array<int> touches, array<int> reactions, array<int> lastBars, bool isSupport) =>
+    if array.size(levels) > 0
+        for j = 0 to array.size(levels) - 1
+            float lvl = array.get(levels, j)
+            bool near = isSupport ? math.abs(low - lvl) <= tol : math.abs(high - lvl) <= tol
+            bool spaced = bar_index - array.get(lastBars, j) >= minBarsBetweenTouches
+            bool reacted = isSupport ? close >= lvl + atrNow * reactionATR : close <= lvl - atrNow * reactionATR
+            if near and spaced
+                array.set(touches, j, array.get(touches, j) + 1)
+                array.set(lastBars, j, bar_index)
+            if near and reacted
+                array.set(reactions, j, array.get(reactions, j) + 1)
+
+f_pickLevel(array<float> levels, array<int> touches, array<int> reactions, array<int> lastBars, bool isSupport) =>
+    float best = na
+    float bestScore = -10e10
+    int bestTouches = 0
+    int bestReactions = 0
+    int bestBarsAgo = na
+    if array.size(levels) > 0
+        for j = 0 to array.size(levels) - 1
+            float lvl = array.get(levels, j)
+            int t = array.get(touches, j)
+            int r = array.get(reactions, j)
+            int barsAgo = bar_index - array.get(lastBars, j)
+            bool sideOk = isSupport ? lvl <= close + tol : lvl >= close - tol
+            bool freshOk = barsAgo <= srLookback
+            if sideOk and freshOk and t >= minTouches and r >= minReactions
+                float distAtr = math.abs(close - lvl) / math.max(atrNow, syminfo.mintick)
+                float score = t * 10.0 + r * 15.0 - distAtr - barsAgo * 0.02
+                if score > bestScore
+                    best := lvl
+                    bestScore := score
+                    bestTouches := t
+                    bestReactions := r
+                    bestBarsAgo := barsAgo
+    [best, bestTouches, bestReactions, bestBarsAgo]
+
+if rangeSource == "Auto SR"
+    f_upsertLevel(supportLevelsArr, supportTouchesArr, supportReactionsArr, supportLastTouchBarArr, supportCreatedBarArr, plAuto, true)
+    f_upsertLevel(resistanceLevelsArr, resistanceTouchesArr, resistanceReactionsArr, resistanceLastTouchBarArr, resistanceCreatedBarArr, phAuto, false)
+    f_updateTouches(supportLevelsArr, supportTouchesArr, supportReactionsArr, supportLastTouchBarArr, true)
+    f_updateTouches(resistanceLevelsArr, resistanceTouchesArr, resistanceReactionsArr, resistanceLastTouchBarArr, false)
+
+var float autoSupport = na
+var float autoResistance = na
+var int supportTouches = 0
+var int resistanceTouches = 0
+var int supportReactions = 0
+var int resistanceReactions = 0
+var int supportFirstBarsAgo = na
+var int resistanceFirstBarsAgo = na
+
+[bestSup, bestSupTouches, bestSupReacts, bestSupFirst] = f_pickLevel(supportLevelsArr, supportTouchesArr, supportReactionsArr, supportLastTouchBarArr, true)
+[bestRes, bestResTouches, bestResReacts, bestResFirst] = f_pickLevel(resistanceLevelsArr, resistanceTouchesArr, resistanceReactionsArr, resistanceLastTouchBarArr, false)
+autoSupport := bestSup
+supportTouches := bestSupTouches
+supportReactions := bestSupReacts
+supportFirstBarsAgo := bestSupFirst
+autoResistance := bestRes
+resistanceTouches := bestResTouches
+resistanceReactions := bestResReacts
+resistanceFirstBarsAgo := bestResFirst
+
+bool manualValid = useManualRange and manualSupport > 0 and manualResistance > 0 and manualResistance > manualSupport
+bool autoValid = not na(autoSupport) and not na(autoResistance) and autoResistance > autoSupport
+bool useSR = rangeSource != "Sin S/R, solo contexto MTF"
+bool activeManual = rangeSource == "Manual SR" and manualValid
+bool activeAuto = rangeSource == "Auto SR" and autoValid
+float support = activeManual ? manualSupport : activeAuto ? autoSupport : na
+float resistance = activeManual ? manualResistance : activeAuto ? autoResistance : na
+bool srValid = useSR and not na(support) and not na(resistance) and resistance > support
+string srState = srValid ? (activeManual ? "S/R manual" : "S/R auto") : useSR ? (rangeSource == "Manual SR" ? "S/R no configurado" : "S/R no confirmado") : "Solo contexto"
+
+// =====================================================================================
+//  ZONA, RUPTURA Y CONTEXTO
+// =====================================================================================
+float rangePosition = srValid ? (close - support) / (resistance - support) * 100.0 : na
+bool nearSupport = srValid and close <= support + (resistance - support) * 0.20
+bool nearResistance = srValid and close >= resistance - (resistance - support) * 0.20
+bool inSupportZone = srValid and close >= support - atrNow * breakoutCloseBufferATR and close <= support + (resistance - support) * 0.20
+bool inResistanceZone = srValid and close <= resistance + atrNow * breakoutCloseBufferATR and close >= resistance - (resistance - support) * 0.20
+float breakBuffer = atrNow * breakoutCloseBufferATR
+bool wideCandle = math.abs(close - open) >= atrNow * 0.70
+bool volConfirm = volRel >= breakoutVolumeMult or wideCandle
+bool rawBreakDn = srValid and close < support - breakBuffer
+bool rawBreakUp = srValid and close > resistance + breakBuffer
+bool supportLost = rawBreakDn and volConfirm and ta.barssince(not rawBreakDn) >= breakoutConfirmBars - 1
+bool resistanceBroken = rawBreakUp and volConfirm and ta.barssince(not rawBreakUp) >= breakoutConfirmBars - 1
+bool recoveredSupport = srValid and close > support and close[1] < support - breakBuffer
+bool rejectedResistance = srValid and close < resistance and close[1] > resistance + breakBuffer
+
+string zone = "Sin S/R"
+if srValid
+    zone := supportLost ? "Ruptura bajista" : resistanceBroken ? "Ruptura alcista" : rangePosition <= 10 ? "Soporte" : rangePosition < 35 ? "Zona baja" : rangePosition <= 65 ? "Medio" : rangePosition < 90 ? "Zona alta" : "Resistencia"
+
+f_dirText(float d) => d > 0 ? "Alcista" : d < 0 ? "Bajista" : "Neutral"
+f_phaseText(float d, float p, bool ns, bool nr, bool brUp, bool brDn) =>
+    string out = "Rango"
+    if brUp or brDn
+        out := "Ruptura"
+    else if ns
+        out := d < 0 ? "Test soporte" : d > 0 ? "Rebote alcista" : "Test soporte"
+    else if nr
+        out := d > 0 ? "Test resistencia" : d < 0 ? "Rechazo resistencia" : "Test resistencia"
+    else if p == 1
+        out := "Impulso"
+    else if p == 2
+        out := d > 0 ? "Pullback alcista" : d < 0 ? "Pullback bajista" : "Pullback"
+    else if p == 4
+        out := "Freno"
+    else if p == 5
+        out := "Ruptura"
+    out
+
+f_tfLabel(string prefix, float d, float p, bool ns, bool nr, bool brUp, bool brDn) =>
+    string phase = f_phaseText(d, p, ns, nr, brUp, brDn)
+    string dir = f_dirText(d)
+    string lbl = dir + " " + str.lower(phase)
+    if ns and d < 0 and not brDn
+        lbl := "Bajista hacia soporte"
+    else if nr and d > 0 and not brUp
+        lbl := "Alcista hacia resistencia"
+    else if p == 2 and d > 0
+        lbl := "Pullback alcista"
+    else if p == 2 and d < 0
+        lbl := "Pullback bajista"
+    else if p == 3
+        lbl := "Rango" + (ns ? " zona baja" : nr ? " zona alta" : "")
+    else if p == 4 and d < 0
+        lbl := "Freno bajista"
+    else if p == 4 and d > 0
+        lbl := "Freno alcista"
+    else if brDn
+        lbl := "Ruptura bajista confirmada"
+    else if brUp
+        lbl := "Ruptura alcista confirmada"
+    prefix == "Macro" ? (d > 0 and p == 2 ? "Macro alcista en corrección" : d > 0 ? "Macro alcista" : d < 0 and brDn ? "Macro bajista confirmada" : d < 0 ? "Macro bajista en desarrollo" : "Macro rango") : lbl
+
+string lbl15 = f_tfLabel("15m", d15, p15, nearSupport, nearResistance, resistanceBroken, supportLost)
+string lbl1h = f_tfLabel("1H", d1h, p1h, nearSupport, nearResistance, resistanceBroken, supportLost)
+string lbl4h = f_tfLabel("4H", d4h, p4h, nearSupport, nearResistance, resistanceBroken, supportLost)
+string lbl1d = f_tfLabel("1D", d1d, p1d, nearSupport, nearResistance, resistanceBroken, supportLost)
+string lblMac = f_tfLabel("Macro", dMac, pMac, false, false, resistanceBroken, supportLost)
+
+string regime = "Transición"
+if supportLost
+    regime := "Ruptura bajista"
+else if resistanceBroken
+    regime := "Ruptura alcista"
+else if inSupportZone and d1h < 0
+    regime := "Soporte bajo presión"
+else if inResistanceZone and d1h > 0
+    regime := "Resistencia bajo presión"
+else if d4h > 0 and p4h == 2
+    regime := "Pullback alcista"
+else if d4h < 0 and p4h == 2
+    regime := "Pullback bajista"
+else if p4h == 3 or p1d == 3
+    regime := "Rango"
+else if d4h > 0
+    regime := "Tendencia alcista"
+else if d4h < 0
+    regime := "Tendencia bajista"
+
+string bias = "Rango equilibrado"
+string plan = "Operar confirmación; riesgo reducido"
+if supportLost
+    bias := "Soporte bajo presión"
+    plan := "Rango roto; priorizar continuación bajista"
+else if resistanceBroken
+    bias := "Resistencia bajo presión"
+    plan := "Ruptura alcista; runner posible"
+else if nearSupport and d4h >= 0
+    bias := d4h > 0 and p4h == 2 ? "Pullback a soporte" : "Preferir LONG en soporte"
+    plan := "Long soporte con confirmación; SL bajo zona"
+else if nearSupport and d4h < 0
+    bias := "No perseguir short en soporte"
+    plan := "No perseguir short; long pequeño o esperar ruptura"
+else if nearResistance and d4h <= 0
+    bias := "Preferir SHORT en resistencia"
+    plan := "Buscar short en resistencia"
+else if nearResistance and d4h > 0
+    bias := "No perseguir long en resistencia"
+    plan := "Tomar parcial o esperar ruptura confirmada"
+else if d4h > 0 and p4h == 2
+    bias := "Pullback a soporte"
+    plan := "Esperar soporte; long solo con confirmación"
+else if d4h < 0 and p4h == 2
+    bias := "Preferir SHORT en resistencia"
+    plan := "Esperar rebote a resistencia para short"
+else if p4h == 3
+    bias := "Solo extremos, riesgo reducido"
+    plan := "Operar extremos; evitar medio del rango"
+else if rawBreakDn
+    bias := "Ruptura bajista pendiente de confirmar"
+    plan := "Esperar cierre/volumen; no anticipar"
+else if rawBreakUp
+    bias := "Ruptura alcista pendiente de confirmar"
+    plan := "Esperar cierre/volumen; no anticipar"
+
+float regimeScore = b15 * 0.10 + b1h * 0.20 + b4h * 0.35 + b1d * 0.25 + bMac * 0.10
+float breakoutScore = (rawBreakUp or rawBreakDn ? 50.0 : 0.0) + (volConfirm ? 30.0 : 0.0) + (breakoutConfirmBars <= 1 ? 20.0 : 10.0)
+
+// =====================================================================================
+//  DIBUJO S/R PERSISTENTE
+// =====================================================================================
+var line lSup = na
+var line lRes = na
+var box bSupBox = na
+var box bResBox = na
+bool drawSR = showSR and srValid and not panelOnlyMode and panelMode != "Mobile" and rangeSource != "Sin S/R, solo contexto MTF"
+int x1AutoSup = bar_index - (not na(supportFirstBarsAgo) and activeAuto ? supportFirstBarsAgo : srHistoryBars)
+int x1AutoRes = bar_index - (not na(resistanceFirstBarsAgo) and activeAuto ? resistanceFirstBarsAgo : srHistoryBars)
+int x1Sup = activeManual ? bar_index - manualLineBackBars : x1AutoSup
+int x1Res = activeManual ? bar_index - manualLineBackBars : x1AutoRes
+if barstate.islast
+    if drawSR and srStyle == "Line"
+        if na(lSup)
+            lSup := line.new(x1Sup, support, bar_index, support, extend = srExtendRight ? extend.right : extend.none, color = color.new(colBuy, 0), width = 2)
+        else
+            line.set_xy1(lSup, x1Sup, support), line.set_xy2(lSup, bar_index, support), line.set_extend(lSup, srExtendRight ? extend.right : extend.none)
+        if na(lRes)
+            lRes := line.new(x1Res, resistance, bar_index, resistance, extend = srExtendRight ? extend.right : extend.none, color = color.new(colSell, 0), width = 2)
+        else
+            line.set_xy1(lRes, x1Res, resistance), line.set_xy2(lRes, bar_index, resistance), line.set_extend(lRes, srExtendRight ? extend.right : extend.none)
+        if not na(bSupBox)
+            box.delete(bSupBox), bSupBox := na
+        if not na(bResBox)
+            box.delete(bResBox), bResBox := na
+    else if drawSR and srStyle == "Zone"
+        if not na(lSup)
+            line.delete(lSup), lSup := na
+        if not na(lRes)
+            line.delete(lRes), lRes := na
+        if na(bSupBox)
+            bSupBox := box.new(x1Sup, support + tol, bar_index, support - tol, extend = srExtendRight ? extend.right : extend.none, bgcolor = color.new(colBuy, 88), border_color = color.new(colBuy, 35))
+        else
+            box.set_lefttop(bSupBox, x1Sup, support + tol), box.set_rightbottom(bSupBox, bar_index, support - tol), box.set_extend(bSupBox, srExtendRight ? extend.right : extend.none)
+        if na(bResBox)
+            bResBox := box.new(x1Res, resistance + tol, bar_index, resistance - tol, extend = srExtendRight ? extend.right : extend.none, bgcolor = color.new(colSell, 88), border_color = color.new(colSell, 35))
+        else
+            box.set_lefttop(bResBox, x1Res, resistance + tol), box.set_rightbottom(bResBox, bar_index, resistance - tol), box.set_extend(bResBox, srExtendRight ? extend.right : extend.none)
+    else
+        if not na(lSup)
+            line.delete(lSup), lSup := na
+        if not na(lRes)
+            line.delete(lRes), lRes := na
+        if not na(bSupBox)
+            box.delete(bSupBox), bSupBox := na
+        if not na(bResBox)
+            box.delete(bResBox), bResBox := na
+
+// =====================================================================================
+//  PANEL
+// =====================================================================================
+f_short(string s) =>
+    string r = s
+    r := str.replace_all(r, "Preferir LONG en soporte", "LONG sup")
+    r := str.replace_all(r, "Preferir SHORT en resistencia", "SHORT res")
+    r := str.replace_all(r, "No perseguir short en soporte", "No short tarde")
+    r := str.replace_all(r, "No perseguir long en resistencia", "No long tarde")
+    r := str.replace_all(r, "Soporte bajo presión", "Sup presión")
+    r := str.replace_all(r, "Resistencia bajo presión", "Res presión")
+    r := str.replace_all(r, "Pullback alcista", "PB↑")
+    r := str.replace_all(r, "Pullback bajista", "PB↓")
+    r := str.replace_all(r, "Pullback a soporte", "PB soporte")
+    r := str.replace_all(r, "Rango zona baja", "Rango bajo")
+    r := str.replace_all(r, "Rango diario zona baja", "Rango bajo")
+    r := str.replace_all(r, "Riesgo reducido", "Riesgo red.")
+    r := str.replace_all(r, "Long soporte con confirmación; SL bajo zona", "LONG conf")
+    r := str.replace_all(r, "No perseguir short; long pequeño o esperar ruptura", "No short tarde")
+    r
+
+var table t = na
+var string tableKey = ""
+if barstate.islast and showPanel
+    int rows = panelMode == "Mobile" ? 5 : panelMode == "Simple" ? 10 : panelMode == "Full" ? 16 : 22
+    int cols = panelMode == "Mobile" and mobileCompact ? 1 : 2
+    string newKey = panelMode + ":" + str.tostring(cols) + ":" + str.tostring(rows) + ":" + (panelMode == "Mobile" ? mobilePosition : panelPosition)
+    if na(t) or newKey != tableKey
+        if not na(t)
+            table.delete(t)
+        t := table.new(f_pos(panelMode == "Mobile" ? mobilePosition : panelPosition), cols, rows, bgcolor = bgPanel, frame_color = color.new(colNeutral, 60), frame_width = 1)
+        tableKey := newKey
+    table.clear(t, 0, 0, cols - 1, rows - 1)
+    sz = panelMode == "Mobile" ? size.tiny : f_size(textSizeDesktop)
+    if panelMode == "Mobile" and mobileCompact
+        table.cell(t, 0, 0, "QRCM " + str.tostring(math.round(regimeScore)), text_color = txtMain, bgcolor = bgHeader, text_size = size.tiny)
+        table.cell(t, 0, 1, mobileTextStyle == "Ultra corto" ? f_short(bias) : bias, text_color = txtMain, text_size = size.tiny)
+        table.cell(t, 0, 2, "4H " + (mobileTextStyle == "Ultra corto" ? f_short(lbl4h) : lbl4h), text_color = d4h > 0 ? colBuy : d4h < 0 ? colSell : colNeutral, text_size = size.tiny)
+        table.cell(t, 0, 3, "1D " + (mobileTextStyle == "Ultra corto" ? f_short(lbl1d) : lbl1d), text_color = d1d > 0 ? colBuy : d1d < 0 ? colSell : colNeutral, text_size = size.tiny)
+        table.cell(t, 0, 4, (mobileTextStyle == "Ultra corto" ? f_short(zone) : zone) + " | " + (mobileTextStyle == "Ultra corto" ? f_short(plan) : plan), text_color = nearSupport ? colBuy : nearResistance ? colSell : colInfo, text_size = size.tiny)
+    else
+        table.cell(t, 0, 0, "QRCM SRC V1.4.1", text_color = txtMain, bgcolor = bgHeader, text_size = sz)
+        table.cell(t, 1, 0, str.tostring(math.round(regimeScore)), text_color = regimeScore > 0 ? colBuy : regimeScore < 0 ? colSell : colNeutral, bgcolor = bgHeader, text_size = sz)
+        table.cell(t, 0, 1, "SESGO", text_color = txtMuted, text_size = sz), table.cell(t, 1, 1, bias, text_color = txtMain, text_size = sz)
+        table.cell(t, 0, 2, "RANGO/SR", text_color = txtMuted, text_size = sz), table.cell(t, 1, 2, srState, text_color = srValid ? colInfo : colWarn, text_size = sz)
+        table.cell(t, 0, 3, "ZONA", text_color = txtMuted, text_size = sz), table.cell(t, 1, 3, zone, text_color = nearSupport ? colBuy : nearResistance ? colSell : colInfo, text_size = sz)
+        table.cell(t, 0, 4, "15m", text_color = txtMuted, text_size = sz), table.cell(t, 1, 4, lbl15, text_color = d15 > 0 ? colBuy : d15 < 0 ? colSell : colNeutral, text_size = sz)
+        table.cell(t, 0, 5, "1H", text_color = txtMuted, text_size = sz), table.cell(t, 1, 5, lbl1h, text_color = d1h > 0 ? colBuy : d1h < 0 ? colSell : colNeutral, text_size = sz)
+        table.cell(t, 0, 6, "4H", text_color = txtMuted, text_size = sz), table.cell(t, 1, 6, lbl4h, text_color = d4h > 0 ? colBuy : d4h < 0 ? colSell : colNeutral, text_size = sz)
+        table.cell(t, 0, 7, "1D", text_color = txtMuted, text_size = sz), table.cell(t, 1, 7, lbl1d, text_color = d1d > 0 ? colBuy : d1d < 0 ? colSell : colNeutral, text_size = sz)
+        table.cell(t, 0, 8, "Macro", text_color = txtMuted, text_size = sz), table.cell(t, 1, 8, lblMac, text_color = dMac > 0 ? colBuy : dMac < 0 ? colSell : colNeutral, text_size = sz)
+        table.cell(t, 0, 9, "PLAN", text_color = txtMuted, text_size = sz), table.cell(t, 1, 9, plan, text_color = txtMain, text_size = sz)
+        if panelMode == "Full" or panelMode == "Debug"
+            table.cell(t, 0, 10, "Regime", text_color = txtMuted, text_size = sz), table.cell(t, 1, 10, regime, text_color = txtMain, text_size = sz)
+            table.cell(t, 0, 11, "ADX/KER/CHOP 4H", text_color = txtMuted, text_size = sz), table.cell(t, 1, 11, str.tostring(adx4h, "#.0") + " / " + str.tostring(ker4h, "#.00") + " / " + str.tostring(chop4h, "#.0"), text_color = txtMain, text_size = sz)
+            table.cell(t, 0, 12, "Range pos", text_color = txtMuted, text_size = sz), table.cell(t, 1, 12, srValid ? str.tostring(rangePosition, "#.0") + "%" : "n/a", text_color = txtMain, text_size = sz)
+            table.cell(t, 0, 13, "Vol rel", text_color = txtMuted, text_size = sz), table.cell(t, 1, 13, str.tostring(volRel, "#.00"), text_color = volConfirm ? colWarn : txtMain, text_size = sz)
+            table.cell(t, 0, 14, "Ruptura", text_color = txtMuted, text_size = sz), table.cell(t, 1, 14, supportLost ? "Bajista confirmada" : resistanceBroken ? "Alcista confirmada" : "No", text_color = supportLost ? colSell : resistanceBroken ? colBuy : colNeutral, text_size = sz)
+            table.cell(t, 0, 15, "Riesgo L/S", text_color = txtMuted, text_size = sz), table.cell(t, 1, 15, (nearSupport ? "L ok" : "L cautela") + " / " + (nearResistance ? "S ok" : "S cautela"), text_color = txtMain, text_size = sz)
+        if panelMode == "Debug"
+            table.cell(t, 0, 16, "Bias raw", text_color = txtMuted, text_size = sz), table.cell(t, 1, 16, str.tostring(b15, "#.0") + "/" + str.tostring(b1h, "#.0") + "/" + str.tostring(b4h, "#.0") + "/" + str.tostring(b1d, "#.0") + "/" + str.tostring(bMac, "#.0"), text_color = txtMain, text_size = sz)
+            table.cell(t, 0, 17, "Phase", text_color = txtMuted, text_size = sz), table.cell(t, 1, 17, str.tostring(p15) + "/" + str.tostring(p1h) + "/" + str.tostring(p4h) + "/" + str.tostring(p1d) + "/" + str.tostring(pMac), text_color = txtMain, text_size = sz)
+            table.cell(t, 0, 18, "Support", text_color = txtMuted, text_size = sz), table.cell(t, 1, 18, srValid ? str.tostring(support) + " t" + str.tostring(activeAuto ? supportTouches : 0) + " r" + str.tostring(activeAuto ? supportReactions : 0) : "n/a", text_color = colBuy, text_size = sz)
+            table.cell(t, 0, 19, "Resistance", text_color = txtMuted, text_size = sz), table.cell(t, 1, 19, srValid ? str.tostring(resistance) + " t" + str.tostring(activeAuto ? resistanceTouches : 0) + " r" + str.tostring(activeAuto ? resistanceReactions : 0) : "n/a", text_color = colSell, text_size = sz)
+            table.cell(t, 0, 20, "Breakout score", text_color = txtMuted, text_size = sz), table.cell(t, 1, 20, str.tostring(breakoutScore, "#.0"), text_color = txtMain, text_size = sz)
+            table.cell(t, 0, 21, "Vol confirm", text_color = txtMuted, text_size = sz), table.cell(t, 1, 21, volConfirm ? "true" : "false", text_color = volConfirm ? colWarn : colNeutral, text_size = sz)
+
+if barstate.islast and not showPanel and not na(t)
+    table.delete(t)
+    t := na
+    tableKey := ""
+
+// =====================================================================================
+//  ALERTAS JSON ESTRUCTURADAS
+// =====================================================================================
+f_payload(string eventType) =>
+    string s = "{"
+    s += '"event_type":"' + eventType + '",'
+    s += '"symbol":"' + syminfo.ticker + '",'
+    s += '"timeframe":"' + timeframe.period + '",'
+    s += '"bias":"' + f_jsonEscape(bias) + '",'
+    s += '"regime":"' + f_jsonEscape(regime) + '",'
+    s += '"zone":"' + f_jsonEscape(zone) + '",'
+    s += '"plan":"' + f_jsonEscape(plan) + '",'
+    s += '"tf_15m":"' + f_jsonEscape(lbl15) + '",'
+    s += '"tf_1h":"' + f_jsonEscape(lbl1h) + '",'
+    s += '"tf_4h":"' + f_jsonEscape(lbl4h) + '",'
+    s += '"tf_1d":"' + f_jsonEscape(lbl1d) + '",'
+    s += '"tf_macro":"' + f_jsonEscape(lblMac) + '",'
+    s += '"support":' + (srValid ? str.tostring(support) : "null") + ','
+    s += '"resistance":' + (srValid ? str.tostring(resistance) : "null") + ','
+    s += '"support_touches":' + str.tostring(activeAuto ? supportTouches : 0) + ','
+    s += '"resistance_touches":' + str.tostring(activeAuto ? resistanceTouches : 0) + ','
+    s += '"breakout_confirmed":' + (supportLost or resistanceBroken ? "true" : "false")
+    s += "}"
+    s
+
+bool alertGate = enableAlerts and (alertsOnClose ? barstate.isconfirmed : true)
+bool contextChanged = bias != bias[1] or regime != regime[1]
+bool zoneChanged = zone != zone[1]
+bool mobileBiasChanged = panelMode == "Mobile" and bias != bias[1]
+bool supportDetected = activeAuto and not na(autoSupport) and (na(autoSupport[1]) or autoSupport != autoSupport[1])
+bool resistanceDetected = activeAuto and not na(autoResistance) and (na(autoResistance[1]) or autoResistance != autoResistance[1])
+
+if alertGate and contextChanged
+    alert(f_payload("qrcm.structure_context_changed"), alert.freq_once_per_bar_close)
+if alertGate and supportDetected
+    alert(f_payload("qrcm.support_detected"), alert.freq_once_per_bar_close)
+if alertGate and resistanceDetected
+    alert(f_payload("qrcm.resistance_detected"), alert.freq_once_per_bar_close)
+if alertGate and supportLost
+    alert(f_payload("qrcm.support_lost"), alert.freq_once_per_bar_close)
+if alertGate and resistanceBroken
+    alert(f_payload("qrcm.resistance_broken"), alert.freq_once_per_bar_close)
+if alertGate and zoneChanged
+    alert(f_payload("qrcm.range_context_changed"), alert.freq_once_per_bar_close)
+if alertGate and mobileBiasChanged
+    alert(f_payload("qrcm.mobile_bias_changed"), alert.freq_once_per_bar_close)
+
+plot(srValid and activeManual ? manualSupport : na, "Soporte manual plot", color = color.new(colBuy, 100), display = display.none)
+plot(srValid and activeManual ? manualResistance : na, "Resistencia manual plot", color = color.new(colSell, 100), display = display.none)
+
+plot(regimeScore, "Regime score", color = regimeScore >= 0 ? colBuy : colSell, linewidth = 2)
+hline(0, "Neutral", color = color.new(colNeutral, 65))
+hline(50, "Alcista fuerte", color = color.new(colBuy, 80))
+hline(-50, "Bajista fuerte", color = color.new(colSell, 80))
