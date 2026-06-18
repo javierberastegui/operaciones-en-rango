@@ -1,5 +1,5 @@
 // © javierberastegui
-//@version=5
+//@version=6
 // =====================================================================================
 //  QRCM Structure Range Context V1.4
 //  Contexto estructural MTF para operar soporte/resistencia con lectura humana.
@@ -12,7 +12,7 @@
 //  - Alertas JSON estructuradas con alert() al cierre por defecto.
 //  - No repaint: security lookahead_off, pivotes confirmados y ruptura por cierre.
 // =====================================================================================
-indicator("QRCM Structure Range Context V1.4", "QRCM SRC V1.4", overlay = true, max_lines_count = 20, max_boxes_count = 10, max_labels_count = 20)
+indicator("QRCM Structure Range Context V1.4", "QRCM SRC", overlay = true, max_lines_count = 20, max_boxes_count = 10, max_labels_count = 20)
 
 // =====================================================================================
 //  INPUTS
@@ -182,6 +182,9 @@ float tol = atrNow * touchToleranceATR
 float volRel = volume / math.max(ta.sma(volume, volLen), 1.0)
 float phAuto = ta.pivothigh(high, pivotLeft, pivotRight)
 float plAuto = ta.pivotlow(low, pivotLeft, pivotRight)
+int reactionLookback = math.min(minBarsBetweenTouches, 50)
+float highestCloseReaction = ta.highest(close, reactionLookback)
+float lowestCloseReaction = ta.lowest(close, reactionLookback)
 
 f_countLowTouches(float lvl) =>
     int touches = 0
@@ -191,7 +194,7 @@ f_countLowTouches(float lvl) =>
     for i = pivotRight to srLookback
         bool near = math.abs(low[i] - lvl) <= tol[i]
         bool spaced = na(lastTouch) or math.abs(i - lastTouch) >= minBarsBetweenTouches
-        bool reacted = ta.highest(close, math.min(minBarsBetweenTouches, 50))[i] >= lvl + atrNow[i] * reactionATR
+        bool reacted = highestCloseReaction[i] >= lvl + atrNow[i] * reactionATR
         if near and spaced
             touches += 1
             lastTouch := i
@@ -207,7 +210,7 @@ f_countHighTouches(float lvl) =>
     for i = pivotRight to srLookback
         bool near = math.abs(high[i] - lvl) <= tol[i]
         bool spaced = na(lastTouch) or math.abs(i - lastTouch) >= minBarsBetweenTouches
-        bool reacted = ta.lowest(close, math.min(minBarsBetweenTouches, 50))[i] <= lvl - atrNow[i] * reactionATR
+        bool reacted = lowestCloseReaction[i] <= lvl - atrNow[i] * reactionATR
         if near and spaced
             touches += 1
             lastTouch := i
@@ -224,46 +227,45 @@ var int resistanceReactions = 0
 var int supportFirstBarsAgo = na
 var int resistanceFirstBarsAgo = na
 
-if barstate.islast or barstate.isconfirmed
-    float bestSup = na
-    float bestSupDist = 10e10
-    int bestSupTouches = 0
-    int bestSupReacts = 0
-    int bestSupFirst = na
-    float bestRes = na
-    float bestResDist = 10e10
-    int bestResTouches = 0
-    int bestResReacts = 0
-    int bestResFirst = na
-    for i = pivotRight to srLookback
-        float lvlL = plAuto[i]
-        if not na(lvlL) and lvlL <= close + tol
-            [t, r, f] = f_countLowTouches(lvlL)
-            float dist = math.abs(close - lvlL)
-            if t >= minTouches and r >= minTouches and dist < bestSupDist
-                bestSup := lvlL
-                bestSupDist := dist
-                bestSupTouches := t
-                bestSupReacts := r
-                bestSupFirst := f
-        float lvlH = phAuto[i]
-        if not na(lvlH) and lvlH >= close - tol
-            [t2, r2, f2] = f_countHighTouches(lvlH)
-            float dist2 = math.abs(close - lvlH)
-            if t2 >= minTouches and r2 >= minTouches and dist2 < bestResDist
-                bestRes := lvlH
-                bestResDist := dist2
-                bestResTouches := t2
-                bestResReacts := r2
-                bestResFirst := f2
-    autoSupport := bestSup
-    supportTouches := bestSupTouches
-    supportReactions := bestSupReacts
-    supportFirstBarsAgo := bestSupFirst
-    autoResistance := bestRes
-    resistanceTouches := bestResTouches
-    resistanceReactions := bestResReacts
-    resistanceFirstBarsAgo := bestResFirst
+float bestSup = na
+float bestSupDist = 10e10
+int bestSupTouches = 0
+int bestSupReacts = 0
+int bestSupFirst = na
+float bestRes = na
+float bestResDist = 10e10
+int bestResTouches = 0
+int bestResReacts = 0
+int bestResFirst = na
+for i = pivotRight to srLookback
+    float lvlL = plAuto[i]
+    [t, r, f] = f_countLowTouches(lvlL)
+    if not na(lvlL) and lvlL <= close + tol
+        float dist = math.abs(close - lvlL)
+        if t >= minTouches and r >= minTouches and dist < bestSupDist
+            bestSup := lvlL
+            bestSupDist := dist
+            bestSupTouches := t
+            bestSupReacts := r
+            bestSupFirst := f
+    float lvlH = phAuto[i]
+    [t2, r2, f2] = f_countHighTouches(lvlH)
+    if not na(lvlH) and lvlH >= close - tol
+        float dist2 = math.abs(close - lvlH)
+        if t2 >= minTouches and r2 >= minTouches and dist2 < bestResDist
+            bestRes := lvlH
+            bestResDist := dist2
+            bestResTouches := t2
+            bestResReacts := r2
+            bestResFirst := f2
+autoSupport := bestSup
+supportTouches := bestSupTouches
+supportReactions := bestSupReacts
+supportFirstBarsAgo := bestSupFirst
+autoResistance := bestRes
+resistanceTouches := bestResTouches
+resistanceReactions := bestResReacts
+resistanceFirstBarsAgo := bestResFirst
 
 bool manualValid = useManualRange and manualSupport > 0 and manualResistance > 0 and manualResistance > manualSupport
 bool autoValid = not na(autoSupport) and not na(autoResistance) and autoResistance > autoSupport
@@ -487,7 +489,7 @@ if barstate.islast and showPanel
         t := table.new(f_pos(panelMode == "Mobile" ? mobilePosition : panelPosition), cols, rows, bgcolor = bgPanel, frame_color = color.new(colNeutral, 60), frame_width = 1)
         tableKey := newKey
     table.clear(t, 0, 0, cols - 1, rows - 1)
-    size sz = panelMode == "Mobile" ? size.tiny : f_size(textSizeDesktop)
+    sz = panelMode == "Mobile" ? size.tiny : f_size(textSizeDesktop)
     if panelMode == "Mobile" and mobileCompact
         table.cell(t, 0, 0, "QRCM " + str.tostring(math.round(regimeScore)), text_color = txtMain, bgcolor = bgHeader, text_size = sz)
         table.cell(t, 0, 1, mobileTextStyle == "Ultra corto" ? f_short(bias) : bias, text_color = txtMain, text_size = sz)
