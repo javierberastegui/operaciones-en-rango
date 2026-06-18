@@ -5,6 +5,31 @@ Bitácora del módulo de indicador `indicators/qrcm_range_executor_v1_1.pine`.
 
 ---
 
+## 2026-06-18 — V1.2 Context MTF (alta independiente)
+
+**Tipo:** feature
+**Autor:** equipo / Codex
+**Estado:** entregado, pendiente de validación en TradingView por el usuario.
+
+### Motivación
+V1.1 resolvía la ejecución de rango, pero seguía estando demasiado ligada a la validez del rango S/R.
+V1.2 nace como indicador independiente centrado en contexto MTF para rangos dibujados o configurados
+manualmente por el trader.
+
+### Qué se ha creado
+- `indicators/qrcm_range_context_mtf_v1_2.pine` (Pine v5, independiente del V1.1 y V1.0).
+- `docs/qrcm_range_context_mtf_v1_2.md` (guía de uso).
+
+### Cambios clave respecto a V1.1
+- El rango manual S/R pasa a ser opcional.
+- La tabla no queda bloqueada si el rango manual no está configurado o es inválido.
+- El modo Simple prioriza `SESGO RANGO`, `RIESGO LONG`, `RIESGO SHORT`, 15m, 1H, 4H, 1D, macro, `LECTURA` y `PLAN`.
+- 4H actúa como timeframe principal de sesgo, 1D confirma o contradice, 15m queda como timing y 1W/1M como contexto macro no bloqueante.
+- Se mantienen Compacto y Debug para métricas internas sin llenar el gráfico de etiquetas.
+
+### Pendiente / próximos pasos
+- Validar compilación y lectura visual en TradingView con rango manual desactivado, manual válido y manual inválido.
+
 ## 2026-06-18 — V1.1 (alta inicial)
 
 **Tipo:** feature
