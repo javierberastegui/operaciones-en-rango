@@ -4,13 +4,18 @@ Indicadores de TradingView (Pine Script) para operativa de **rango** en futuros.
 
 ## Indicadores
 
+- **QRCM Range Executor V1.1** — `indicators/qrcm_range_executor_v1_1.pine` ⭐ *recomendado para operar*
+  Versión simple y ejecutable: tabla brutalmente clara (¿ENTRO O NO ENTRO?), rango **manual** o auto,
+  3 modos (Simple/Compacto/Debug), runner 10% corregido por contexto de posición y gráfico sin spam.
+  Guía de uso: [`docs/qrcm_range_executor_v1_1.md`](docs/qrcm_range_executor_v1_1.md).
+
 - **QRCM Range MTF Risk Board V1.0** — `indicators/qrcm_range_mtf_risk_board_v1.pine`
-  Indicador de contexto, régimen, riesgo y gestión emocional para operar rangos con
-  visión multi-temporalidad (15m / 1H / 4H / 1D / 1M), multiplicador de riesgo,
-  lectura del runner 10% y alertas JSON.
+  Versión completa de contexto, régimen, riesgo y gestión emocional con visión multi-temporalidad
+  (15m / 1H / 4H / 1D / 1M), multiplicador de riesgo, runner 10% y alertas JSON.
   Guía de uso: [`docs/qrcm_range_mtf_risk_board_v1.md`](docs/qrcm_range_mtf_risk_board_v1.md).
 
-> Inspirado en QRCE-Lite V1.1, pero **independiente**: no sustituye ni modifica ese indicador.
+> El Executor V1.1 es independiente: **no sustituye** al Risk Board V1.0 (ambos conviven).
+> Ambos están inspirados en QRCE-Lite V1.1.
 
 ## Estructura
 

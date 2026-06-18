@@ -1,0 +1,880 @@
+// © javierberastegui
+//@version=5
+// =====================================================================================
+//  QRCM Range Executor V1.1
+//  Versión SIMPLE y ejecutable de QRCM Range MTF Risk Board V1.0 (no la sustituye).
+//  Objetivo: responder rápido ¿ENTRO O NO ENTRO? en operativa de rango.
+//
+//  - Rango MANUAL (input.price movibles) o AUTO (Donchian/pivotes).
+//  - Tabla "ejecutor": DECISIÓN / ACCIÓN / RANGO / ZONA / TENDENCIA / RUNNER 10%.
+//  - 3 modos: Simple (def.), Compacto, Debug.
+//  - Sin spam de etiquetas en el gráfico (labels off por defecto).
+//  - Runner 10% solo se evalúa cuando gestionas una posición (positionContext).
+//  - No repaint: request.security lookahead_off, pivotes confirmados, alertas al cierre.
+// =====================================================================================
+indicator("QRCM Range Executor V1.1", "QRCM Executor V1.1", overlay = true, max_labels_count = 20, max_lines_count = 20)
+
+// =====================================================================================
+//  INPUTS
+// =====================================================================================
+// --- General / Modo ------------------------------------------------------------------
+gGEN          = "General"
+panelMode     = input.string("Simple", "Modo panel", options = ["Simple", "Compacto", "Debug"], group = gGEN)
+positionContext = input.string("Sin posición", "Contexto de posición", options = ["Sin posición", "Long desde soporte", "Short desde resistencia"], group = gGEN, tooltip = "El runner 10% solo se evalúa si estás gestionando una posición.")
+panelPosition = input.string("Top Right", "Posición panel", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group = gGEN)
+textSize      = input.string("Normal", "Tamaño texto", options = ["Tiny", "Small", "Normal", "Large"], group = gGEN)
+
+// --- Rango ---------------------------------------------------------------------------
+gRNG            = "Rango"
+rangeMode       = input.string("Manual", "Modo de rango", options = ["Manual", "Auto"], group = gRNG)
+manualSupport   = input.price(0.0, "Soporte manual", confirm = true, group = gRNG, tooltip = "Coloca el soporte al añadir el indicador (o ajústalo aquí).")
+manualResistance= input.price(0.0, "Resistencia manual", confirm = true, group = gRNG, tooltip = "Coloca la resistencia al añadir el indicador (o ajústalo aquí).")
+autoRangeLen    = input.int(100, "Auto: lookback", minval = 10, group = gRNG)
+pivotLeft       = input.int(3, "Auto: pivote izq.", minval = 1, group = gRNG)
+pivotRight      = input.int(3, "Auto: pivote der.", minval = 1, group = gRNG)
+supportZonePct  = input.float(20, "Zona soporte <%",     minval = 0, maxval = 100, group = gRNG)
+middleLowPct    = input.float(40, "Medio bajo <%",       minval = 0, maxval = 100, group = gRNG)
+middleHighPct   = input.float(60, "Medio alto <=%",      minval = 0, maxval = 100, group = gRNG)
+resistanceZonePct = input.float(80, "Zona resistencia >%", minval = 0, maxval = 100, group = gRNG)
+breakoutBufferATR = input.float(0.15, "Buffer ruptura (ATR)", minval = 0, step = 0.05, group = gRNG)
+minRangeATR     = input.float(1.5, "Rango mínimo (ATR)",  minval = 0, step = 0.1, group = gRNG)
+maxRangeATR     = input.float(12.0, "Rango máximo (ATR)", minval = 0.1, step = 0.5, group = gRNG)
+atrLen          = input.int(14, "ATR len", minval = 1, group = gRNG)
+
+// --- MTF -----------------------------------------------------------------------------
+gMTF        = "MTF"
+tfFast      = input.timeframe("15", "TF rápido",  group = gMTF)
+tfOperative = input.string("",      "TF operativo (vacío = gráfico)", group = gMTF)
+tfHTF       = input.timeframe("240", "TF superior", group = gMTF)
+tfDaily     = input.timeframe("D",   "TF diario",   group = gMTF)
+tfMacro     = input.timeframe("M",   "TF macro",    group = gMTF)
+w15         = input.float(10, "Peso 15m", minval = 0, group = gMTF)
+w1h         = input.float(20, "Peso 1H",  minval = 0, group = gMTF)
+w4h         = input.float(35, "Peso 4H",  minval = 0, group = gMTF)
+w1d         = input.float(25, "Peso 1D",  minval = 0, group = gMTF)
+w1m         = input.float(10, "Peso 1M",  minval = 0, group = gMTF)
+confirmHTF  = input.bool(true, "HTF sin repaint (barra cerrada)", group = gMTF)
+emaFastLen  = input.int(21, "EMA rápida", minval = 1, group = gMTF)
+emaSlowLen  = input.int(55, "EMA lenta",  minval = 1, group = gMTF)
+rsiLen      = input.int(14, "RSI len",    minval = 1, group = gMTF)
+adxLen      = input.int(14, "ADX/DI len", minval = 1, group = gMTF)
+kerLen      = input.int(20, "KER len",    minval = 1, group = gMTF)
+slopeLen    = input.int(5,  "Slope len",  minval = 1, group = gMTF)
+slopeThresh = input.float(0.05, "Slope mínimo (ATR/barra)", minval = 0, step = 0.01, group = gMTF)
+pivLeftTrend  = input.int(3, "Estructura: pivote izq.", minval = 1, group = gMTF)
+pivRightTrend = input.int(3, "Estructura: pivote der.", minval = 1, group = gMTF)
+biasWeakThresh   = input.float(20, "Umbral débil",  minval = 1, group = gMTF)
+biasStrongThresh = input.float(50, "Umbral fuerte", minval = 1, group = gMTF)
+
+// --- Riesgo / Score ------------------------------------------------------------------
+gRSK            = "Riesgo / Score"
+scoreOperateMin = input.float(65, "Score mínimo ENTRAR",  minval = 0, maxval = 100, group = gRSK)
+scoreCautionMin = input.float(50, "Score mínimo CAUTELA", minval = 0, maxval = 100, group = gRSK)
+allow2x         = input.bool(true, "Permitir 2x a favor de tendencia", group = gRSK)
+volExtremeRatio = input.float(1.8, "Ratio ATR extremo", minval = 1, step = 0.1, group = gRSK)
+volAtrLen       = input.int(20, "Media ATR len", minval = 1, group = gRSK)
+volAvgLen       = input.int(20, "Media volumen len", minval = 1, group = gRSK)
+rsiOB           = input.float(70, "RSI sobrecompra", minval = 50, maxval = 100, group = gRSK)
+rsiOS           = input.float(30, "RSI sobreventa",  minval = 0,  maxval = 50,  group = gRSK)
+
+// --- Visual --------------------------------------------------------------------------
+gVS                  = "Visual"
+showRangeLines       = input.bool(true,  "Mostrar líneas S/R", group = gVS)
+showRangeZones       = input.bool(true,  "Mostrar zonas S/R", group = gVS)
+showMiddleNoTradeZone= input.bool(true,  "Mostrar zona media (NO OPERAR)", group = gVS)
+showSignalLabels     = input.bool(false, "Mostrar etiqueta de señal", group = gVS)
+showOnlyLastSignalLabel = input.bool(true, "Solo una etiqueta (última vela)", group = gVS)
+
+// --- Alertas -------------------------------------------------------------------------
+gAL                = "Alertas"
+enableAlerts       = input.bool(true, "Habilitar alertas", group = gAL)
+alertDecision      = input.bool(true, "Alerta cambio de decisión", group = gAL)
+alertZone          = input.bool(true, "Alerta cambio de zona", group = gAL)
+alertRisk          = input.bool(true, "Alerta cambio de riesgo", group = gAL)
+alertRunner        = input.bool(true, "Alerta cambio de runner", group = gAL)
+alertRangeBreak    = input.bool(true, "Alerta rango roto/recuperado", group = gAL)
+alertOncePerBarClose = input.bool(true, "Solo al cierre de vela", group = gAL)
+
+// =====================================================================================
+//  CONSTANTES (colores + pesos internos)
+// =====================================================================================
+var float wEma    = 0.30
+var float wStruct = 0.20
+var float wAdx    = 0.20
+var float wKer    = 0.15
+var float wRsi    = 0.15
+
+color colBuy     = #16a34a   // verde: comprar / long favorable
+color colSell    = #dc2626   // rojo: vender / short favorable / ruptura
+color colCaution = #f59e0b   // ámbar: cautela
+color colNeutral = #94a3b8   // gris: neutral / no aplica
+color colNo      = #7f1d1d   // rojo oscuro: no operar
+color colInfo    = #38bdf8   // cian: info de rango
+color bgPanel    = #0e0f13
+color bgHeader   = #1a1c22
+color bgFrame    = #2a2d36
+color txtMuted   = #b8bcc4
+color txtMain    = #e6e6e6
+
+// =====================================================================================
+//  HELPERS matemáticos
+// =====================================================================================
+f_ker(float src, simple int len) =>
+    float num = math.abs(src - src[len])
+    float den = math.sum(math.abs(src - src[1]), len)
+    den != 0.0 ? num / den : 0.0
+
+f_slopeAtr(float emaSrc, simple int len, float atrSrc) =>
+    atrSrc != 0.0 ? (emaSrc - emaSrc[len]) / len / atrSrc : 0.0
+
+// =====================================================================================
+//  MOTOR DE TENDENCIA MTF  ->  f_trendPack
+//  Devuelve [biasScore(-100..100), adx, ker, rsi] en el contexto del TF solicitado.
+// =====================================================================================
+f_trendPack(simple int o) =>
+    float emaF = ta.ema(close, emaFastLen)
+    float emaS = ta.ema(close, emaSlowLen)
+    float _atr = ta.atr(atrLen)
+    float slp  = f_slopeAtr(emaF, slopeLen, _atr)
+    [diP, diM, adxV] = ta.dmi(adxLen, adxLen)
+    float kerV = f_ker(close, kerLen)
+    float rsiV = ta.rsi(close, rsiLen)
+
+    float eC = 0.0
+    eC := eC + (close > emaF ? 1.0 : -1.0)
+    eC := eC + (emaF > emaS ? 1.0 : -1.0)
+    eC := eC + (slp > slopeThresh ? 1.0 : slp < -slopeThresh ? -1.0 : 0.0)
+    float emaComp = eC / 3.0 * 100.0
+
+    float ph = ta.pivothigh(high, pivLeftTrend, pivRightTrend)
+    float pl = ta.pivotlow(low, pivLeftTrend, pivRightTrend)
+    float lastPH = ta.valuewhen(not na(ph), ph, 0)
+    float prevPH = ta.valuewhen(not na(ph), ph, 1)
+    float lastPL = ta.valuewhen(not na(pl), pl, 0)
+    float prevPL = ta.valuewhen(not na(pl), pl, 1)
+    bool hh = lastPH > prevPH
+    bool hl = lastPL > prevPL
+    bool lh = lastPH < prevPH
+    bool ll = lastPL < prevPL
+    float structComp = (hh and hl) ? 100.0 : (ll and lh) ? -100.0 : (hh or hl) ? 40.0 : (ll or lh) ? -40.0 : 0.0
+
+    float diDir = diP >= diM ? 1.0 : -1.0
+    float adxComp = diDir * math.min(adxV, 50.0) / 50.0 * 100.0
+
+    float dirK = close >= close[kerLen] ? 1.0 : -1.0
+    float kerComp = dirK * math.min(kerV, 1.0) * 100.0
+
+    float rsiComp = math.max(math.min((rsiV - 50.0) / 20.0, 1.0), -1.0) * 100.0
+    rsiComp := (rsiV > 45.0 and rsiV < 55.0) ? 0.0 : rsiComp
+
+    float bias = emaComp * wEma + structComp * wStruct + adxComp * wAdx + kerComp * wKer + rsiComp * wRsi
+    bias := math.max(math.min(bias, 100.0), -100.0)
+    [bias[o], adxV[o], kerV[o], rsiV[o]]
+
+// =====================================================================================
+//  HELPERS de clasificación de bias
+// =====================================================================================
+f_isBull(float s)       => s >= biasWeakThresh
+f_isBear(float s)       => s <= -biasWeakThresh
+f_isStrongBull(float s) => s >= biasStrongThresh
+f_isStrongBear(float s) => s <= -biasStrongThresh
+f_isNeutral(float s)    => math.abs(s) < biasWeakThresh
+
+// Etiqueta por TF (5 estados)
+f_biasLabel(float s) =>
+    string r = "Neutral"
+    if s >= biasStrongThresh
+        r := "Alcista fuerte"
+    else if s >= biasWeakThresh
+        r := "Alcista"
+    else if s <= -biasStrongThresh
+        r := "Bajista fuerte"
+    else if s <= -biasWeakThresh
+        r := "Bajista"
+    r
+
+f_biasLabelAgg(float s) =>
+    string r = "Neutral"
+    if s >= biasStrongThresh
+        r := "Alcista fuerte"
+    else if s >= 25.0
+        r := "Alcista"
+    else if s >= 10.0
+        r := "Alcista débil"
+    else if s <= -biasStrongThresh
+        r := "Bajista fuerte"
+    else if s <= -25.0
+        r := "Bajista"
+    else if s <= -10.0
+        r := "Bajista débil"
+    r
+
+f_biasKey(float s) =>
+    string r = "neutral"
+    if s >= biasStrongThresh
+        r := "bullish_strong"
+    else if s >= biasWeakThresh
+        r := "bullish"
+    else if s <= -biasStrongThresh
+        r := "bearish_strong"
+    else if s <= -biasWeakThresh
+        r := "bearish"
+    r
+
+f_biasColor(float s) =>
+    color c = colNeutral
+    if s >= biasStrongThresh
+        c := colBuy
+    else if s >= biasWeakThresh
+        c := color.new(colBuy, 25)
+    else if s <= -biasStrongThresh
+        c := colSell
+    else if s <= -biasWeakThresh
+        c := color.new(colSell, 25)
+    c
+
+// =====================================================================================
+//  MOTOR DE RIESGO  ->  multiplicador {0, 0.25, 0.5, 1, 1.5, 2}
+// =====================================================================================
+f_riskLong(bool elig, bool zonaBaja, float b4, float b1, float bm, float mtf, int exPts) =>
+    float r = 0.0
+    if elig
+        bool sb4 = f_isStrongBear(b4)
+        bool sb1 = f_isStrongBear(b1)
+        if sb4 and sb1
+            r := 0.25
+        else if sb4 or sb1
+            r := 0.5
+        else if f_isBull(b4) and f_isBull(b1)
+            r := (allow2x and exPts < 4 and math.abs(mtf) >= biasWeakThresh) ? 2.0 : 1.5
+        else if f_isBull(b4) and not f_isBear(b1)
+            r := 1.0
+        else if not f_isBear(b4) and not f_isBear(b1)
+            r := 1.0
+        else
+            r := 0.5
+        if zonaBaja
+            r := math.min(r, 1.0)
+        if math.abs(mtf) < biasWeakThresh
+            r := math.min(r, 1.0)
+        if exPts >= 6
+            r := math.min(r, 0.5)
+    r
+
+f_riskShort(bool elig, bool zonaAlta, float b4, float b1, float bm, float mtf, int exPts) =>
+    float r = 0.0
+    if elig
+        bool sb4 = f_isStrongBull(b4)
+        bool sb1 = f_isStrongBull(b1)
+        if sb4 and sb1
+            r := 0.25
+        else if sb4 or sb1
+            r := 0.5
+        else if f_isBear(b4) and f_isBear(b1)
+            r := (allow2x and exPts < 4 and math.abs(mtf) >= biasWeakThresh) ? 2.0 : 1.5
+        else if f_isBear(b4) and not f_isBull(b1)
+            r := 1.0
+        else if not f_isBull(b4) and not f_isBull(b1)
+            r := 1.0
+        else
+            r := 0.5
+        if zonaAlta
+            r := math.min(r, 1.0)
+        if math.abs(mtf) < biasWeakThresh
+            r := math.min(r, 1.0)
+        if exPts >= 6
+            r := math.min(r, 0.5)
+    r
+
+// =====================================================================================
+//  MOTOR RUNNER 10% (solo se evalúa al llegar al extremo CONTRARIO gestionando posición)
+// =====================================================================================
+f_runnerLong(float b4, float b1, int exPts, bool adxRise, bool kerRise, bool brkUp, bool rej) =>
+    string st = "NO — CERRAR EN RESISTENCIA"
+    if f_isStrongBear(b4) or f_isStrongBear(b1) or exPts >= 6 or rej
+        st := "NO — CERRAR EN RESISTENCIA"
+    else if f_isBull(b4) and not f_isBear(b1) and (brkUp or (adxRise and kerRise))
+        st := brkUp ? "SÍ — DEJAR 10%" : "SOLO SI ROMPE RESISTENCIA"
+    else if not f_isBear(b4)
+        st := "SOLO SI ROMPE RESISTENCIA"
+    else
+        st := "NO — CERRAR EN RESISTENCIA"
+    st
+
+f_runnerShort(float b4, float b1, int exPts, bool adxRise, bool kerRise, bool brkDn, bool rej) =>
+    string st = "NO — CERRAR EN SOPORTE"
+    if f_isStrongBull(b4) or f_isStrongBull(b1) or exPts >= 6 or rej
+        st := "NO — CERRAR EN SOPORTE"
+    else if f_isBear(b4) and not f_isBull(b1) and (brkDn or (adxRise and kerRise))
+        st := brkDn ? "SÍ — DEJAR 10%" : "SOLO SI ROMPE SOPORTE"
+    else if not f_isBull(b4)
+        st := "SOLO SI ROMPE SOPORTE"
+    else
+        st := "NO — CERRAR EN SOPORTE"
+    st
+
+// =====================================================================================
+//  CONTEXTO DE TENDENCIA (resumen humano relativo al lado evaluado)
+// =====================================================================================
+f_trendContext(int s, float b4, float b1, float bm) =>
+    string r = "Neutral"
+    if s == 0
+        if f_isBull(b4) and f_isBull(b1)
+            r := "Alcista 4H/1D"
+        else if f_isBear(b4) and f_isBear(b1)
+            r := "Bajista 4H/1D"
+        else if (f_isBull(b4) and f_isBear(b1)) or (f_isBear(b4) and f_isBull(b1))
+            r := "Mixta 4H/1D"
+        else
+            r := "Neutral"
+    else
+        bool fav4 = s > 0 ? f_isBull(b4) : f_isBear(b4)
+        bool ag4  = s > 0 ? f_isBear(b4) : f_isBull(b4)
+        bool fav1 = s > 0 ? f_isBull(b1) : f_isBear(b1)
+        bool ag1  = s > 0 ? f_isBear(b1) : f_isBull(b1)
+        if fav4 and fav1
+            r := "A favor 4H/1D"
+        else if ag4 and ag1
+            r := "En contra 4H/1D"
+        else if (fav4 and ag1) or (ag4 and fav1)
+            r := "Mixta 4H/1D"
+        else
+            bool agM = s > 0 ? f_isBear(bm) : f_isBull(bm)
+            bool faM = s > 0 ? f_isBull(bm) : f_isBear(bm)
+            r := agM ? "Macro en contra" : faM ? "Macro a favor" : "Neutral"
+    r
+
+f_trendCtxColor(string t) =>
+    color c = colNeutral
+    if str.contains(t, "A favor") or str.contains(t, "Alcista") or str.contains(t, "Macro a favor")
+        c := colBuy
+    else if str.contains(t, "En contra") or str.contains(t, "Bajista") or str.contains(t, "Macro en contra")
+        c := colSell
+    else if str.contains(t, "Mixta")
+        c := colCaution
+    c
+
+// =====================================================================================
+//  HELPERS de presentación
+// =====================================================================================
+f_riskStr(float r) => str.tostring(r, "0.##") + "x"
+
+f_zoneNice(string z) =>
+    string r = z
+    if z == "SOPORTE"
+        r := "Soporte"
+    else if z == "ZONA BAJA"
+        r := "Zona baja"
+    else if z == "MEDIO"
+        r := "Medio — no operar"
+    else if z == "ZONA ALTA"
+        r := "Zona alta"
+    else if z == "RESISTENCIA"
+        r := "Resistencia"
+    else if z == "RUPTURA ALCISTA"
+        r := "Ruptura alcista"
+    else if z == "RUPTURA BAJISTA"
+        r := "Ruptura bajista"
+    r
+
+f_zoneKey(string z) =>
+    string r = "middle"
+    if z == "SOPORTE"
+        r := "support"
+    else if z == "ZONA BAJA"
+        r := "low"
+    else if z == "ZONA ALTA"
+        r := "high"
+    else if z == "RESISTENCIA"
+        r := "resistance"
+    else if z == "RUPTURA ALCISTA"
+        r := "breakout_up"
+    else if z == "RUPTURA BAJISTA"
+        r := "breakout_down"
+    r
+
+f_zoneColor(string z) =>
+    color c = colNeutral
+    if z == "SOPORTE" or z == "ZONA BAJA"
+        c := colBuy
+    else if z == "RESISTENCIA" or z == "ZONA ALTA"
+        c := colSell
+    else if z == "RUPTURA ALCISTA" or z == "RUPTURA BAJISTA"
+        c := colInfo
+    c
+
+f_riskColor(float r) =>
+    color c = colNeutral
+    if r <= 0.0
+        c := colNo
+    else if r < 1.0
+        c := colCaution
+    else if r <= 1.0
+        c := colInfo
+    else if r <= 1.5
+        c := color.new(colBuy, 20)
+    else
+        c := colBuy
+    c
+
+f_tfLabel(string tf) =>
+    string t = tf == "" ? timeframe.period : tf
+    string r = t
+    if t == "15"
+        r := "15m"
+    else if t == "30"
+        r := "30m"
+    else if t == "60"
+        r := "1H"
+    else if t == "120"
+        r := "2H"
+    else if t == "240"
+        r := "4H"
+    else if t == "D"
+        r := "1D"
+    else if t == "W"
+        r := "1W"
+    else if t == "M"
+        r := "1M"
+    r
+
+f_pos(string s) =>
+    s == "Top Right" ? position.top_right : s == "Top Left" ? position.top_left : s == "Bottom Right" ? position.bottom_right : s == "Bottom Left" ? position.bottom_left : position.middle_right
+
+f_txt(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Large" ? size.large : size.normal
+
+f_row(table p, int rw, string lTxt, string vTxt, color lc, color vc, color lbg, color vbg, string sz) =>
+    table.cell(p, 0, rw, lTxt, text_color = lc, bgcolor = lbg, text_size = sz, text_halign = text.align_left)
+    table.cell(p, 1, rw, vTxt, text_color = vc, bgcolor = vbg, text_size = sz, text_halign = text.align_left)
+
+// =====================================================================================
+//  CÁLCULOS GLOBALES
+// =====================================================================================
+// --- MTF (no repaint) ---------------------------------------------------------------
+simple int secOff = confirmHTF ? 1 : 0
+string tfOp = tfOperative == "" ? timeframe.period : tfOperative
+[b15, adx15, ker15, rsi15] = request.security(syminfo.tickerid, tfFast,  f_trendPack(secOff), lookahead = barmerge.lookahead_off)
+[bOp, adxOp, kerOp, rsiOp] = request.security(syminfo.tickerid, tfOp,    f_trendPack(secOff), lookahead = barmerge.lookahead_off)
+[b4h, adx4h, ker4h, rsi4h] = request.security(syminfo.tickerid, tfHTF,   f_trendPack(secOff), lookahead = barmerge.lookahead_off)
+[b1d, adx1d, ker1d, rsi1d] = request.security(syminfo.tickerid, tfDaily, f_trendPack(secOff), lookahead = barmerge.lookahead_off)
+[b1m, adx1m, ker1m, rsi1m] = request.security(syminfo.tickerid, tfMacro, f_trendPack(secOff), lookahead = barmerge.lookahead_off)
+
+float wSum = w15 + w1h + w4h + w1d + w1m
+float mtfBias = wSum > 0.0 ? (b15 * w15 + bOp * w1h + b4h * w4h + b1d * w1d + b1m * w1m) / wSum : 0.0
+
+// --- Indicadores nativos del gráfico ------------------------------------------------
+float emaFc = ta.ema(close, emaFastLen)
+float emaSc = ta.ema(close, emaSlowLen)
+float atrC  = ta.atr(atrLen)
+[diPc, diMc, adxC] = ta.dmi(adxLen, adxLen)
+float kerC  = f_ker(close, kerLen)
+float rsiC  = ta.rsi(close, rsiLen)
+
+float atrMA    = ta.sma(atrC, volAtrLen)
+float atrRatio = atrMA != 0.0 ? atrC / atrMA : 1.0
+bool  volExtreme = atrRatio >= volExtremeRatio
+string volState = atrRatio < 0.8 ? "Baja" : atrRatio < 1.3 ? "Normal" : atrRatio < volExtremeRatio ? "Alta" : "Extrema"
+float volHealth01 = atrRatio <= 1.3 ? 1.0 : atrRatio >= 2.0 ? 0.0 : 1.0 - (atrRatio - 1.3) / (2.0 - 1.3)
+
+float volSma = ta.sma(volume, volAvgLen)
+bool  volOk = not na(volume) and volume > 0.0 and not na(volSma) and volSma > 0.0
+float relVol = volOk ? volume / volSma : na
+string volStateStr = not volOk ? "n/a" : relVol >= 1.5 ? "Alto" : relVol >= 0.7 ? "Normal" : "Bajo"
+
+// --- Soporte / Resistencia (Manual o Auto) ------------------------------------------
+float phc = ta.pivothigh(high, pivotLeft, pivotRight)
+float plc = ta.pivotlow(low, pivotLeft, pivotRight)
+var float lpH = na
+var float lpL = na
+if not na(phc)
+    lpH := phc
+if not na(plc)
+    lpL := plc
+float donHigh = ta.highest(high, autoRangeLen)
+float donLow  = ta.lowest(low, autoRangeLen)
+float autoRes = na(lpH) ? donHigh : math.avg(donHigh, lpH)
+float autoSup = na(lpL) ? donLow  : math.avg(donLow, lpL)
+float support    = rangeMode == "Manual" ? manualSupport : autoSup
+float resistance = rangeMode == "Manual" ? manualResistance : autoRes
+
+float rangeSize = resistance - support
+float rangeWidthATR = atrC > 0.0 ? rangeSize / atrC : 0.0
+float buf = breakoutBufferATR * atrC
+float rangePosition = rangeSize > 0.0 ? (close - support) / rangeSize * 100.0 : na
+bool rangeOkBase = resistance > support and rangeSize > 0.0
+bool breakoutUp   = rangeOkBase and close > resistance + buf
+bool breakoutDown = rangeOkBase and close < support - buf
+bool broken = breakoutUp or breakoutDown
+bool narrow = rangeOkBase and rangeWidthATR < minRangeATR
+bool wide   = rangeOkBase and rangeWidthATR > maxRangeATR
+
+// --- Estado del rango ---------------------------------------------------------------
+string rangeState = "INVÁLIDO"
+if not rangeOkBase
+    rangeState := "INVÁLIDO"
+else if broken
+    rangeState := "ROTO"
+else if narrow
+    rangeState := "ESTRECHO — NO COMPENSA"
+else if wide or volExtreme
+    rangeState := "VOLÁTIL — CAUTELA"
+else
+    rangeState := "VÁLIDO"
+bool rangeValid = rangeState == "VÁLIDO"
+string rangeDisplay = rangeValid ? (rangeMode == "Manual" ? "MANUAL VÁLIDO" : "VÁLIDO") : rangeState
+
+// --- Zona ---------------------------------------------------------------------------
+string zone = "MEDIO"
+if breakoutUp
+    zone := "RUPTURA ALCISTA"
+else if breakoutDown
+    zone := "RUPTURA BAJISTA"
+else if not rangeOkBase
+    zone := "MEDIO"
+else
+    float pz = rangePosition
+    if pz < supportZonePct
+        zone := "SOPORTE"
+    else if pz < middleLowPct
+        zone := "ZONA BAJA"
+    else if pz <= middleHighPct
+        zone := "MEDIO"
+    else if pz < resistanceZonePct
+        zone := "ZONA ALTA"
+    else
+        zone := "RESISTENCIA"
+
+bool longZone  = zone == "SOPORTE" or zone == "ZONA BAJA"
+bool shortZone = zone == "RESISTENCIA" or zone == "ZONA ALTA"
+bool midZone   = zone == "MEDIO"
+bool atTop     = zone == "ZONA ALTA" or zone == "RESISTENCIA" or breakoutUp
+bool atBottom  = zone == "ZONA BAJA" or zone == "SOPORTE" or breakoutDown
+
+// --- Agotamiento (ligero) -----------------------------------------------------------
+float distEmaATR = atrC > 0.0 ? math.abs(close - emaSc) / atrC : 0.0
+bool rsiHot  = rsiC >= rsiOB
+bool rsiCold = rsiC <= rsiOS
+var int upCnt = 0
+var int dnCnt = 0
+upCnt := close > close[1] ? upCnt + 1 : 0
+dnCnt := close < close[1] ? dnCnt + 1 : 0
+bool volSpike = volOk and relVol >= 2.0
+
+int exUpPts = 0
+exUpPts += rsiHot ? 2 : 0
+exUpPts += distEmaATR > 2.5 and close > emaSc ? 2 : 0
+exUpPts += upCnt >= 5 ? 1 : 0
+exUpPts += volSpike and close < open ? 1 : 0
+int exDnPts = 0
+exDnPts += rsiCold ? 2 : 0
+exDnPts += distEmaATR > 2.5 and close < emaSc ? 2 : 0
+exDnPts += dnCnt >= 5 ? 1 : 0
+exDnPts += volSpike and close > open ? 1 : 0
+
+bool adxRise = adxC > adxC[3]
+bool kerRise = kerC > kerC[3]
+bool rejUp = rangeOkBase and high >= resistance - buf and close < open and (high - close) > (close - low)
+bool rejDn = rangeOkBase and low  <= support + buf and close > open and (close - low) > (high - close)
+
+// --- Score (0..100) -----------------------------------------------------------------
+float pq = nz(rangePosition, 50.0)
+float rangeQual01 = rangeValid ? 1.0 : rangeState == "VOLÁTIL — CAUTELA" ? 0.6 : 0.0
+float locLong01  = pq <= supportZonePct ? 1.0 : pq >= middleHighPct ? 0.0 : (middleHighPct - pq) / (middleHighPct - supportZonePct)
+float locShort01 = pq >= resistanceZonePct ? 1.0 : pq <= middleLowPct ? 0.0 : (pq - middleLowPct) / (resistanceZonePct - middleLowPct)
+float mtfLong01  = math.max(mtfBias, 0.0) / 100.0
+float mtfShort01 = math.max(-mtfBias, 0.0) / 100.0
+float exLong01   = 1.0 - math.min(exDnPts / 8.0, 1.0)
+float exShort01  = 1.0 - math.min(exUpPts / 8.0, 1.0)
+float longScore  = (locLong01 * 0.35 + rangeQual01 * 0.25 + mtfLong01 * 0.25 + volHealth01 * 0.10 + exLong01 * 0.05) * 100.0
+float shortScore = (locShort01 * 0.35 + rangeQual01 * 0.25 + mtfShort01 * 0.25 + volHealth01 * 0.10 + exShort01 * 0.05) * 100.0
+float rangeScore = rangeQual01 * 100.0
+float scoreShown = positionContext == "Long desde soporte" ? longScore : positionContext == "Short desde resistencia" ? shortScore : longZone ? longScore : shortZone ? shortScore : math.max(longScore, shortScore)
+
+// --- TQI + métricas debug -----------------------------------------------------------
+float adxN  = math.min(adxC / 25.0, 1.0)
+float kerN  = math.min(kerC, 1.0)
+float emaCoh = (close > emaFc and emaFc > emaSc) or (close < emaFc and emaFc < emaSc) ? 1.0 : 0.0
+float slopeN = math.min(math.abs(f_slopeAtr(emaFc, slopeLen, atrC)) / (slopeThresh * 3.0), 1.0)
+float tqi = adxN * 0.30 + kerN * 0.25 + emaCoh * 0.15 + slopeN * 0.15 + (math.abs(mtfBias) / 100.0) * 0.15
+float exhaustionScore = math.max(exUpPts, exDnPts) / 6.0 * 100.0
+float distEdge01 = pq <= 50.0 ? (1.0 - pq / 50.0) : (pq - 50.0) / 50.0
+float breakoutRiskScore = (distEdge01 * 0.40 + math.min(adxC / 30.0, 1.0) * 0.30 + math.min(kerC / 0.5, 1.0) * 0.20 + (volSpike ? 1.0 : 0.0) * 0.10) * 100.0
+
+// --- Contexto de tendencia ----------------------------------------------------------
+int evalSide = positionContext == "Long desde soporte" ? 1 : positionContext == "Short desde resistencia" ? -1 : longZone ? 1 : shortZone ? -1 : 0
+string trendContext = f_trendContext(evalSide, b4h, b1d, b1m)
+color trendCtxCol = f_trendCtxColor(trendContext)
+
+// =====================================================================================
+//  MOTOR DE DECISIÓN  (¿ENTRO O NO ENTRO?)
+// =====================================================================================
+bool eligLong  = longZone and rangeValid and not breakoutDown
+bool eligShort = shortZone and rangeValid and not breakoutUp
+float riskLong  = f_riskLong(eligLong, zone == "ZONA BAJA", b4h, b1d, b1m, mtfBias, exDnPts)
+float riskShort = f_riskShort(eligShort, zone == "ZONA ALTA", b4h, b1d, b1m, mtfBias, exUpPts)
+
+string decision   = "ESPERAR CONFIRMACIÓN"
+string action     = "NO ENTRAR"
+float  riskMult   = 0.0
+string runnerState = "NO APLICA"
+color  decisionCol = colNeutral
+color  actionCol   = colNeutral
+
+if positionContext == "Sin posición"
+    runnerState := "NO APLICA"
+    if broken
+        decision := breakoutUp ? "NO OPERAR — RUPTURA ALCISTA" : "NO OPERAR — RUPTURA BAJISTA"
+        action := "ESPERAR NUEVO RANGO"
+        riskMult := 0.0
+        decisionCol := colNo
+        actionCol := colNo
+    else if not rangeValid
+        decision := "NO OPERAR — RANGO INVÁLIDO"
+        action := "NO ENTRAR"
+        riskMult := 0.0
+        decisionCol := colNo
+        actionCol := colNo
+    else if midZone
+        decision := "NO OPERAR — MEDIO DEL RANGO"
+        action := "NO ENTRAR"
+        riskMult := 0.0
+        decisionCol := colNo
+        actionCol := colNo
+    else if longZone
+        if riskLong <= 0.0 or longScore < scoreCautionMin
+            decision := "NO ENTRAR"
+            action := "NO ENTRAR"
+            riskMult := 0.0
+            decisionCol := colNo
+            actionCol := colNo
+        else
+            riskMult := riskLong
+            bool cautelaScore = longScore < scoreOperateMin
+            bool reduced = riskLong <= 0.5 or f_isBear(b4h) or f_isBear(b1d)
+            if cautelaScore
+                decision := "LONG CON CAUTELA"
+                decisionCol := colCaution
+            else
+                decision := zone == "SOPORTE" ? "COMPRAR SOPORTE" : "BUSCAR LONG ZONA BAJA"
+                decisionCol := colBuy
+            action := "ENTRAR " + f_riskStr(riskLong) + ((cautelaScore or reduced) ? " / CAUTELA" : "")
+            actionCol := (cautelaScore or reduced) ? colCaution : colBuy
+    else if shortZone
+        if riskShort <= 0.0 or shortScore < scoreCautionMin
+            decision := "NO ENTRAR"
+            action := "NO ENTRAR"
+            riskMult := 0.0
+            decisionCol := colNo
+            actionCol := colNo
+        else
+            riskMult := riskShort
+            bool cautelaScoreS = shortScore < scoreOperateMin
+            bool reducedS = riskShort <= 0.5 or f_isBull(b4h) or f_isBull(b1d)
+            if cautelaScoreS
+                decision := "SHORT CON CAUTELA"
+                decisionCol := colCaution
+            else
+                decision := zone == "RESISTENCIA" ? "VENDER RESISTENCIA" : "BUSCAR SHORT ZONA ALTA"
+                decisionCol := colSell
+            action := "ENTRAR " + f_riskStr(riskShort) + ((cautelaScoreS or reducedS) ? " / CAUTELA" : "")
+            actionCol := (cautelaScoreS or reducedS) ? colCaution : colSell
+else if positionContext == "Long desde soporte"
+    if breakoutDown
+        decision := "INVALIDAR LONG"
+        action := "CERRAR — PIERDE SOPORTE"
+        decisionCol := colNo
+        actionCol := colNo
+        runnerState := "NO — CERRAR"
+    else if atTop
+        decision := "TOMAR BENEFICIO"
+        decisionCol := colBuy
+        runnerState := f_runnerLong(b4h, b1d, exUpPts, adxRise, kerRise, breakoutUp, rejUp)
+        action := str.contains(runnerState, "DEJAR 10") ? "CERRAR PARCIAL + DEJAR RUNNER 10%" : str.contains(runnerState, "SOLO") ? "CERRAR PARCIAL (runner si rompe)" : "CERRAR TODO"
+        actionCol := colBuy
+    else if midZone
+        decision := "GESTIONAR LONG"
+        action := "NO AÑADIR EN MEDIO"
+        decisionCol := colInfo
+        actionCol := colNeutral
+        runnerState := "NO APLICA — PRIMERO LLEGAR A RESISTENCIA"
+    else
+        decision := "GESTIONAR LONG"
+        action := "MANTENER / INVALIDAR SI PIERDE SOPORTE"
+        decisionCol := colInfo
+        actionCol := colNeutral
+        runnerState := "NO APLICA — PRIMERO LLEGAR A RESISTENCIA"
+else
+    if breakoutUp
+        decision := "INVALIDAR SHORT"
+        action := "CERRAR — ROMPE RESISTENCIA"
+        decisionCol := colNo
+        actionCol := colNo
+        runnerState := "NO — CERRAR"
+    else if atBottom
+        decision := "TOMAR BENEFICIO"
+        decisionCol := colSell
+        runnerState := f_runnerShort(b4h, b1d, exDnPts, adxRise, kerRise, breakoutDown, rejDn)
+        action := str.contains(runnerState, "DEJAR 10") ? "CERRAR PARCIAL + DEJAR RUNNER 10%" : str.contains(runnerState, "SOLO") ? "CERRAR PARCIAL (runner si rompe)" : "CERRAR TODO"
+        actionCol := colSell
+    else if midZone
+        decision := "GESTIONAR SHORT"
+        action := "NO AÑADIR EN MEDIO"
+        decisionCol := colInfo
+        actionCol := colNeutral
+        runnerState := "NO APLICA — PRIMERO LLEGAR A SOPORTE"
+    else
+        decision := "GESTIONAR SHORT"
+        action := "MANTENER / INVALIDAR SI ROMPE RESISTENCIA"
+        decisionCol := colInfo
+        actionCol := colNeutral
+        runnerState := "NO APLICA — PRIMERO LLEGAR A SOPORTE"
+
+color runnerCol = colNeutral
+if str.contains(runnerState, "DEJAR 10")
+    runnerCol := colBuy
+else if str.contains(runnerState, "SOLO")
+    runnerCol := colCaution
+else if str.contains(runnerState, "NO APLICA")
+    runnerCol := colNeutral
+else if str.contains(runnerState, "CERRAR") or str.contains(runnerState, "NO —")
+    runnerCol := colSell
+
+// --- Cadenas de panel ---------------------------------------------------------------
+string scoreStr   = str.tostring(scoreShown, "0")
+string riskDisplay = positionContext == "Sin posición" ? f_riskStr(riskMult) : "Gestión"
+string biasMtfStr = f_biasLabelAgg(mtfBias) + " (" + str.tostring(mtfBias, "0") + ")"
+string zoneNice   = f_zoneNice(zone)
+color  zoneCol    = f_zoneColor(zone)
+color  scoreCol   = scoreShown >= scoreOperateMin ? colBuy : scoreShown >= scoreCautionMin ? colCaution : colNo
+color  rangeCol   = rangeValid ? colBuy : rangeState == "ROTO" ? colSell : rangeState == "VOLÁTIL — CAUTELA" ? colCaution : colNo
+color  riskCellCol = positionContext == "Sin posición" ? f_riskColor(riskMult) : colNeutral
+
+// =====================================================================================
+//  PANEL VISUAL
+// =====================================================================================
+var table p = na
+if barstate.islast
+    int nRows = panelMode == "Simple" ? 7 : panelMode == "Compacto" ? 13 : 28
+    if na(p)
+        p := table.new(f_pos(panelPosition), 2, nRows, bgcolor = bgPanel, frame_color = bgFrame, frame_width = 1, border_color = bgFrame, border_width = 1)
+    string sz = f_txt(textSize)
+    f_row(p, 0, "QRCM Range Executor V1.1", scoreStr, txtMain, scoreCol, bgHeader, bgHeader, sz)
+    if panelMode == "Simple"
+        f_row(p, 1, "DECISIÓN", decision, txtMuted, decisionCol, bgHeader, bgPanel, sz)
+        f_row(p, 2, "ACCIÓN", action, txtMuted, actionCol, bgHeader, bgPanel, sz)
+        f_row(p, 3, "RANGO", rangeDisplay, txtMuted, rangeCol, bgHeader, bgPanel, sz)
+        f_row(p, 4, "ZONA", zoneNice, txtMuted, zoneCol, bgHeader, bgPanel, sz)
+        f_row(p, 5, "TENDENCIA", trendContext, txtMuted, trendCtxCol, bgHeader, bgPanel, sz)
+        f_row(p, 6, "RUNNER 10%", runnerState, txtMuted, runnerCol, bgHeader, bgPanel, sz)
+    else if panelMode == "Compacto"
+        f_row(p, 1, "DECISIÓN", decision, txtMuted, decisionCol, bgHeader, bgPanel, sz)
+        f_row(p, 2, "ACCIÓN", action, txtMuted, actionCol, bgHeader, bgPanel, sz)
+        f_row(p, 3, "RANGO", rangeDisplay, txtMuted, rangeCol, bgHeader, bgPanel, sz)
+        f_row(p, 4, "ZONA", zoneNice, txtMuted, zoneCol, bgHeader, bgPanel, sz)
+        f_row(p, 5, "RIESGO", riskDisplay, txtMuted, riskCellCol, bgHeader, bgPanel, sz)
+        f_row(p, 6, "BIAS MTF", biasMtfStr, txtMuted, f_biasColor(mtfBias), bgHeader, bgPanel, sz)
+        f_row(p, 7, f_tfLabel(tfFast), f_biasLabel(b15), txtMuted, f_biasColor(b15), bgHeader, bgPanel, sz)
+        f_row(p, 8, f_tfLabel(tfOp), f_biasLabel(bOp), txtMuted, f_biasColor(bOp), bgHeader, bgPanel, sz)
+        f_row(p, 9, f_tfLabel(tfHTF), f_biasLabel(b4h), txtMuted, f_biasColor(b4h), bgHeader, bgPanel, sz)
+        f_row(p, 10, f_tfLabel(tfDaily), f_biasLabel(b1d), txtMuted, f_biasColor(b1d), bgHeader, bgPanel, sz)
+        f_row(p, 11, f_tfLabel(tfMacro), f_biasLabel(b1m), txtMuted, f_biasColor(b1m), bgHeader, bgPanel, sz)
+        f_row(p, 12, "RUNNER 10%", runnerState, txtMuted, runnerCol, bgHeader, bgPanel, sz)
+    else
+        f_row(p, 1, "DECISIÓN", decision, txtMuted, decisionCol, bgHeader, bgPanel, sz)
+        f_row(p, 2, "ACCIÓN", action, txtMuted, actionCol, bgHeader, bgPanel, sz)
+        f_row(p, 3, "RANGO", rangeDisplay, txtMuted, rangeCol, bgHeader, bgPanel, sz)
+        f_row(p, 4, "ZONA", zoneNice, txtMuted, zoneCol, bgHeader, bgPanel, sz)
+        f_row(p, 5, "TENDENCIA", trendContext, txtMuted, trendCtxCol, bgHeader, bgPanel, sz)
+        f_row(p, 6, "RUNNER 10%", runnerState, txtMuted, runnerCol, bgHeader, bgPanel, sz)
+        f_row(p, 7, "RIESGO", riskDisplay, txtMuted, riskCellCol, bgHeader, bgPanel, sz)
+        f_row(p, 8, "BIAS MTF", biasMtfStr, txtMuted, f_biasColor(mtfBias), bgHeader, bgPanel, sz)
+        f_row(p, 9, f_tfLabel(tfFast), f_biasLabel(b15), txtMuted, f_biasColor(b15), bgHeader, bgPanel, sz)
+        f_row(p, 10, f_tfLabel(tfOp), f_biasLabel(bOp), txtMuted, f_biasColor(bOp), bgHeader, bgPanel, sz)
+        f_row(p, 11, f_tfLabel(tfHTF), f_biasLabel(b4h), txtMuted, f_biasColor(b4h), bgHeader, bgPanel, sz)
+        f_row(p, 12, f_tfLabel(tfDaily), f_biasLabel(b1d), txtMuted, f_biasColor(b1d), bgHeader, bgPanel, sz)
+        f_row(p, 13, f_tfLabel(tfMacro), f_biasLabel(b1m), txtMuted, f_biasColor(b1m), bgHeader, bgPanel, sz)
+        f_row(p, 14, "ADX", str.tostring(adxC, "0.0"), txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 15, "KER", str.tostring(kerC, "0.00"), txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 16, "TQI", str.tostring(tqi, "0.00"), txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 17, "RSI", str.tostring(rsiC, "0.0"), txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 18, "Volatilidad", volState, txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 19, "Volumen", volStateStr, txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 20, "Range Position", str.tostring(nz(rangePosition, 0.0), "0.0") + "%", txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 21, "Range Width ATR", str.tostring(rangeWidthATR, "0.0"), txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 22, "LongScore", str.tostring(longScore, "0"), txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 23, "ShortScore", str.tostring(shortScore, "0"), txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 24, "RangeScore", str.tostring(rangeScore, "0"), txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 25, "MTFBiasScore", str.tostring(mtfBias, "0"), txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 26, "ExhaustionScore", str.tostring(exhaustionScore, "0"), txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 27, "BreakoutRiskScore", str.tostring(breakoutRiskScore, "0"), txtMuted, colInfo, bgHeader, bgPanel, sz)
+
+// =====================================================================================
+//  DIBUJO EN EL GRÁFICO (líneas + zonas, sin spam)
+// =====================================================================================
+float supTop    = support + rangeSize * supportZonePct / 100.0
+float midLowLvl = support + rangeSize * middleLowPct / 100.0
+float midHighLvl= support + rangeSize * middleHighPct / 100.0
+float resBot    = support + rangeSize * resistanceZonePct / 100.0
+
+pSup = plot(showRangeLines and rangeOkBase ? support : na, "Soporte", color = colBuy, linewidth = 2, style = plot.style_linebr)
+pRes = plot(showRangeLines and rangeOkBase ? resistance : na, "Resistencia", color = colSell, linewidth = 2, style = plot.style_linebr)
+
+zSupLo = plot(showRangeZones and rangeOkBase ? support : na,    "z_supLo", display = display.none)
+zSupHi = plot(showRangeZones and rangeOkBase ? supTop : na,     "z_supHi", display = display.none)
+zResLo = plot(showRangeZones and rangeOkBase ? resBot : na,     "z_resLo", display = display.none)
+zResHi = plot(showRangeZones and rangeOkBase ? resistance : na, "z_resHi", display = display.none)
+zMidLo = plot(showMiddleNoTradeZone and rangeOkBase ? midLowLvl : na,  "z_midLo", display = display.none)
+zMidHi = plot(showMiddleNoTradeZone and rangeOkBase ? midHighLvl : na, "z_midHi", display = display.none)
+fill(zSupLo, zSupHi, color = color.new(colBuy, 90), title = "Zona soporte")
+fill(zResLo, zResHi, color = color.new(colSell, 90), title = "Zona resistencia")
+fill(zMidLo, zMidHi, color = color.new(colNeutral, 85), title = "Zona media (no operar)")
+
+// Etiqueta de señal (desactivada por defecto; sin labels repetidos)
+var label sig = na
+if showSignalLabels
+    if showOnlyLastSignalLabel
+        if barstate.islast
+            if not na(sig)
+                label.delete(sig)
+            sig := label.new(bar_index, high, decision + " · " + action, yloc = yloc.abovebar, color = color.new(decisionCol, 10), textcolor = color.white, style = label.style_label_down, size = size.small)
+    else
+        if barstate.isconfirmed and decision != decision[1]
+            sig := label.new(bar_index, high, decision, yloc = yloc.abovebar, color = color.new(decisionCol, 10), textcolor = color.white, style = label.style_label_down, size = size.small)
+
+// =====================================================================================
+//  ALERTAS / EVENTOS ESTRUCTURADOS (JSON)
+// =====================================================================================
+f_json(string etype) =>
+    '{' + '"event_type":"' + etype + '",' + '"symbol":"' + syminfo.tickerid + '",' + '"timeframe":"' + timeframe.period + '",' + '"decision":"' + decision + '",' + '"action":"' + action + '",' + '"position_context":"' + positionContext + '",' + '"range_mode":"' + rangeMode + '",' + '"zone":"' + f_zoneKey(zone) + '",' + '"risk_multiplier":"' + f_riskStr(riskMult) + '",' + '"score":' + str.tostring(scoreShown, "0") + ',' + '"trend_context":"' + trendContext + '",' + '"runner_10":"' + runnerState + '",' + '"support":' + str.tostring(support, format.mintick) + ',' + '"resistance":' + str.tostring(resistance, format.mintick) + ',' + '"range_position":' + str.tostring(nz(rangePosition, 0.0), "0.0") + '}'
+
+var string prevDecision = na
+var string prevZone     = na
+var float  prevRisk     = na
+var string prevRunner   = na
+var string prevRange    = na
+
+bool canAlert = enableAlerts and (alertOncePerBarClose ? barstate.isconfirmed : barstate.islast)
+if canAlert
+    string zk = f_zoneKey(zone)
+    if alertDecision and not na(prevDecision) and decision != prevDecision
+        alert(f_json("qrcm.decision_changed"), alert.freq_once_per_bar)
+    if alertZone and not na(prevZone) and zk != prevZone
+        alert(f_json("qrcm.zone_changed"), alert.freq_once_per_bar)
+    if alertRisk and not na(prevRisk) and riskMult != prevRisk
+        alert(f_json("qrcm.risk_changed"), alert.freq_once_per_bar)
+    if alertRunner and not na(prevRunner) and runnerState != prevRunner
+        alert(f_json("qrcm.runner_changed"), alert.freq_once_per_bar)
+    if alertRangeBreak and not na(prevRange) and rangeState == "ROTO" and prevRange != "ROTO"
+        alert(f_json("qrcm.range_broken"), alert.freq_once_per_bar)
+    if alertRangeBreak and not na(prevRange) and rangeValid and prevRange != "VÁLIDO"
+        alert(f_json("qrcm.range_recovered"), alert.freq_once_per_bar)
+    prevDecision := decision
+    prevZone     := zk
+    prevRisk     := riskMult
+    prevRunner   := runnerState
+    prevRange    := rangeState
+
+// Alertcondition básicas (mensajes con placeholders nativos)
+alertcondition(decision != decision[1], "QRCM cambio de decisión", "QRCM Executor: cambio de decisión — {{ticker}} {{interval}}")
+alertcondition((rangeState == "ROTO") and (rangeState[1] != "ROTO"), "QRCM rango roto", "QRCM Executor: rango ROTO — {{ticker}} {{interval}}")
