@@ -1,0 +1,972 @@
+// © javierberastegui
+//@version=5
+// =====================================================================================
+//  QRCM Range MTF Risk Board V1.0
+//  Indicador de CONTEXTO, REGIMEN, RIESGO y GESTION EMOCIONAL para operativa de rango.
+//  Inspirado en QRCE-Lite V1.1 (indicador separado, NO sustituye al anterior).
+//
+//  NO es estrategia. No usa strategy.entry/exit. No promete señales mágicas.
+//  Ayuda a decidir: ¿buen rango? ¿soporte/resistencia? ¿a favor/contra tendencia?
+//  ¿sigue siendo rango o se rompe? ¿operar/doblar/reducir/no tocar? ¿runner 10%?
+//
+//  No repaint: request.security con lookahead_off + opción de barra HTF cerrada.
+//  Alertas estructuradas en JSON al cierre de vela.
+// =====================================================================================
+indicator("QRCM Range MTF Risk Board V1.0", "QRCM Range V1.0", overlay = true, max_lines_count = 50, max_labels_count = 200)
+
+// =====================================================================================
+//  INPUTS
+// =====================================================================================
+// --- Timeframes ----------------------------------------------------------------------
+gTF        = "Timeframes (MTF)"
+tfFast     = input.timeframe("15", "TF rápido (timing/ruido)",      group = gTF)
+tfOperative= input.string("",      "TF operativo (vacío = gráfico)", group = gTF)
+tfHTF      = input.timeframe("240", "TF superior (tendencia)",       group = gTF)
+tfDaily    = input.timeframe("D",   "TF diario (macro intermedio)",  group = gTF)
+tfMacro    = input.timeframe("M",   "TF macro (sesgo estructural)",  group = gTF)
+w15        = input.float(15, "Peso 15m %",  minval = 0, group = gTF)
+wOp        = input.float(25, "Peso oper. %", minval = 0, group = gTF)
+wHtf       = input.float(30, "Peso 4H %",   minval = 0, group = gTF)
+wDaily     = input.float(20, "Peso 1D %",   minval = 0, group = gTF)
+wMacro     = input.float(10, "Peso 1M %",   minval = 0, group = gTF)
+confirmHTF = input.bool(true, "HTF sin repaint (usar barra cerrada)", group = gTF, tooltip = "Si está activo usa la última barra HTF cerrada (offset 1). Evita repaint a costa de algo de lag.")
+
+// --- Trend Engine --------------------------------------------------------------------
+gTR          = "Trend Engine"
+emaFastLen   = input.int(21, "EMA rápida", minval = 1, group = gTR)
+emaSlowLen   = input.int(55, "EMA lenta",  minval = 1, group = gTR)
+adxLen       = input.int(14, "ADX/DI len", minval = 1, group = gTR)
+rsiLen       = input.int(14, "RSI len",    minval = 1, group = gTR)
+kerLen       = input.int(20, "KER len",    minval = 1, group = gTR)
+slopeLen     = input.int(5,  "Slope len",  minval = 1, group = gTR)
+slopeThresh  = input.float(0.05, "Slope mínimo (ATR/barra)", minval = 0, step = 0.01, group = gTR)
+pivLeftTrend = input.int(3, "Pivote izq. (estructura)",  minval = 1, group = gTR)
+pivRightTrend= input.int(3, "Pivote der. (estructura)",  minval = 1, group = gTR)
+
+// --- Range Engine --------------------------------------------------------------------
+gRG            = "Range Engine"
+rangeLen       = input.int(100, "Lookback rango (barras)", minval = 10, group = gRG)
+pivotLeft      = input.int(3, "Pivote izq. (S/R)", minval = 1, group = gRG)
+pivotRight     = input.int(3, "Pivote der. (S/R)", minval = 1, group = gRG)
+srMode         = input.string("Donchian", "Modo S/R", options = ["Donchian", "Pivots", "Fusion"], group = gRG)
+adxRangeMax    = input.float(20, "ADX máx. para rango",  minval = 1, group = gRG)
+adxTrendLevel  = input.float(25, "ADX nivel tendencia",  minval = 1, group = gRG)
+kerRangeMax    = input.float(0.30, "KER máx. para rango", minval = 0, step = 0.01, group = gRG)
+kerTrendLevel  = input.float(0.45, "KER nivel direccional", minval = 0, step = 0.01, group = gRG)
+chopLen        = input.int(14, "Choppiness len", minval = 2, group = gRG)
+bbLen          = input.int(20, "Bollinger len",  minval = 2, group = gRG)
+bbMult         = input.float(2.0, "Bollinger mult", minval = 0.1, step = 0.1, group = gRG)
+atrLen         = input.int(14, "ATR len", minval = 1, group = gRG)
+atrBuffer      = input.float(0.25, "Buffer ruptura (ATR)", minval = 0, step = 0.05, group = gRG)
+minRangeATR    = input.float(2.0, "Rango mínimo (ATR)",  minval = 0, step = 0.1, group = gRG)
+maxRangeATR    = input.float(10.0, "Rango máximo (ATR)", minval = 0.1, step = 0.5, group = gRG)
+supportZonePct = input.float(20, "Zona soporte <%",     minval = 0, maxval = 100, group = gRG)
+middleLowPct   = input.float(40, "Medio bajo <%",       minval = 0, maxval = 100, group = gRG)
+middleHighPct  = input.float(60, "Medio alto <=%",      minval = 0, maxval = 100, group = gRG)
+resistZonePct  = input.float(80, "Zona resistencia >%", minval = 0, maxval = 100, group = gRG)
+
+// --- Volatilidad / Volumen -----------------------------------------------------------
+gVV            = "Volatilidad / Volumen"
+volAtrLen      = input.int(20, "Media ATR len",  minval = 1, group = gVV)
+volPctLen      = input.int(100, "ATR percentil len", minval = 2, group = gVV)
+volExtremeRatio= input.float(1.8, "Ratio ATR extremo", minval = 1, step = 0.1, group = gVV)
+volAvgLen      = input.int(20, "Media volumen len", minval = 1, group = gVV)
+volSpikeMult   = input.float(2.0, "Spike volumen x", minval = 1, step = 0.1, group = gVV)
+
+// --- Exhaustion ----------------------------------------------------------------------
+gEX            = "Agotamiento"
+rsiOB          = input.float(70, "RSI sobrecompra", minval = 50, maxval = 100, group = gEX)
+rsiOS          = input.float(30, "RSI sobreventa",  minval = 0,  maxval = 50,  group = gEX)
+exhaustDistATR = input.float(3.0, "Distancia EMA (ATR)", minval = 0, step = 0.5, group = gEX)
+exhaustStreak  = input.int(5, "Velas extendidas",   minval = 2, group = gEX)
+adxRiseLen     = input.int(3, "ADX subiendo (lookback)", minval = 1, group = gEX)
+kerRiseLen     = input.int(3, "KER subiendo (lookback)", minval = 1, group = gEX)
+
+// --- Clasificación bias --------------------------------------------------------------
+gCL            = "Clasificación"
+biasWeakThresh = input.float(20, "Umbral débil",  minval = 1, group = gCL)
+biasStrongThresh = input.float(50, "Umbral fuerte", minval = 1, group = gCL)
+
+// --- Risk ----------------------------------------------------------------------------
+gRK              = "Risk"
+scoreOperateMin  = input.float(65, "Score mínimo OPERAR", minval = 0, maxval = 100, group = gRK)
+scoreCautionMin  = input.float(50, "Score mínimo CAUTELA", minval = 0, maxval = 100, group = gRK)
+allow2xRisk      = input.bool(true, "Permitir 2x a favor de tendencia", group = gRK)
+maxRiskAgainstHTF= input.float(0.5, "Riesgo máx. contra HTF", minval = 0, maxval = 2, step = 0.25, group = gRK)
+runnerMinMTFBias = input.float(35, "Runner: bias MTF mínimo", minval = 0, group = gRK)
+runnerNeedsBreakoutConfirm = input.bool(true, "Runner exige confirmación de ruptura", group = gRK)
+
+// --- Visual --------------------------------------------------------------------------
+gVS            = "Visual"
+showPanel      = input.bool(true, "Mostrar panel", group = gVS)
+panelMode      = input.string("Full", "Modo panel", options = ["Full", "Compact", "Mini"], group = gVS)
+panelPosition  = input.string("Top Right", "Posición panel", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group = gVS)
+textSize       = input.string("Small", "Tamaño texto", options = ["Tiny", "Small", "Normal", "Large"], group = gVS)
+showLevels     = input.bool(true,  "Mostrar niveles S/R", group = gVS)
+showRangeLines = input.bool(true,  "Líneas S/R", group = gVS)
+showRangeZones = input.bool(true,  "Zonas S/R sombreadas", group = gVS)
+showBackground = input.bool(false, "Fondo según bias MTF", group = gVS)
+showBarColor   = input.bool(false, "Color de velas según gate", group = gVS)
+showGateLabels = input.bool(true,  "Etiquetas al cambiar gate", group = gVS)
+showDebug      = input.bool(false, "Modo debug (data window)", group = gVS)
+
+// --- Alerts --------------------------------------------------------------------------
+gAL                = "Alerts"
+enableAlerts       = input.bool(true, "Habilitar alertas", group = gAL)
+alertOnGateChange  = input.bool(true, "Alerta cambio de gate", group = gAL)
+alertBiasChange    = input.bool(true, "Alerta cambio de bias MTF", group = gAL)
+alertRiskChange    = input.bool(true, "Alerta cambio de riesgo", group = gAL)
+alertOnRunnerChange= input.bool(true, "Alerta cambio de runner 10%", group = gAL)
+alertOnBreakoutRisk= input.bool(true, "Alerta riesgo de ruptura", group = gAL)
+alertOncePerBarClose = input.bool(true, "Solo al cierre de vela", group = gAL)
+
+// =====================================================================================
+//  CONSTANTES (colores + pesos internos del trend score)
+// =====================================================================================
+// Pesos internos del biasScore por TF (suman 1.0)
+var float wEma    = 0.30
+var float wStruct = 0.20
+var float wAdx    = 0.20
+var float wKer    = 0.15
+var float wRsi    = 0.15
+
+// Paleta estética tipo QRCE-Lite (panel oscuro)
+color colUpStrong   = #16a34a   // verde fuerte (long / alcista fuerte)
+color colUpWeak     = #4ade80   // verde suave (alcista débil / riesgo a favor)
+color colDownStrong = #dc2626   // rojo fuerte (short / bajista fuerte)
+color colDownWeak   = #f87171   // rojo suave (bajista débil)
+color colNeutral    = #94a3b8   // gris (neutral)
+color colCaution    = #f59e0b   // ámbar (cautela)
+color colNo         = #7f1d1d   // granate (no operar)
+color colInfo       = #38bdf8   // cian (info / volatilidad)
+color bgPanel       = #0e0f13   // fondo panel
+color bgHeader      = #1a1c22   // fondo cabecera / etiquetas
+color bgFrame       = #2a2d36   // marco
+color txtMuted      = #b8bcc4   // texto etiquetas
+color txtMain       = #e6e6e6   // texto principal
+
+// =====================================================================================
+//  MOTOR DE FUERZA / CALIDAD: helpers matemáticos
+// =====================================================================================
+// Kaufman Efficiency Ratio (0..1): direccionalidad / ruido
+f_ker(float src, simple int len) =>
+    float num = math.abs(src - src[len])
+    float den = math.sum(math.abs(src - src[1]), len)
+    den != 0.0 ? num / den : 0.0
+
+// Pendiente normalizada por ATR (cambio medio por barra / ATR)
+f_slopeAtr(float emaSrc, simple int len, float atrSrc) =>
+    atrSrc != 0.0 ? (emaSrc - emaSrc[len]) / len / atrSrc : 0.0
+
+// =====================================================================================
+//  1. MOTOR DE TENDENCIA MTF  ->  f_trendPack
+//  Devuelve [biasScore(-100..100), adx, ker, rsi] calculado en el contexto del TF.
+//  El parámetro o (offset) permite leer la barra cerrada (no repaint) cuando confirmHTF.
+// =====================================================================================
+f_trendPack(simple int o) =>
+    float emaF = ta.ema(close, emaFastLen)
+    float emaS = ta.ema(close, emaSlowLen)
+    float _atr = ta.atr(atrLen)
+    float slp  = f_slopeAtr(emaF, slopeLen, _atr)
+    [diP, diM, adxV] = ta.dmi(adxLen, adxLen)
+    float kerV = f_ker(close, kerLen)
+    float rsiV = ta.rsi(close, rsiLen)
+
+    // A. EMAs (alineación + pendiente) -> -100..100
+    float eC = 0.0
+    eC := eC + (close > emaF ? 1.0 : -1.0)
+    eC := eC + (emaF > emaS ? 1.0 : -1.0)
+    eC := eC + (slp > slopeThresh ? 1.0 : slp < -slopeThresh ? -1.0 : 0.0)
+    float emaComp = eC / 3.0 * 100.0
+
+    // C. Estructura: HH/HL vs LL/LH con pivotes CONFIRMADOS (sin repaint)
+    float ph = ta.pivothigh(high, pivLeftTrend, pivRightTrend)
+    float pl = ta.pivotlow(low, pivLeftTrend, pivRightTrend)
+    float lastPH = ta.valuewhen(not na(ph), ph, 0)
+    float prevPH = ta.valuewhen(not na(ph), ph, 1)
+    float lastPL = ta.valuewhen(not na(pl), pl, 0)
+    float prevPL = ta.valuewhen(not na(pl), pl, 1)
+    bool hh = lastPH > prevPH
+    bool hl = lastPL > prevPL
+    bool lh = lastPH < prevPH
+    bool ll = lastPL < prevPL
+    float structComp = (hh and hl) ? 100.0 : (ll and lh) ? -100.0 : (hh or hl) ? 40.0 : (ll or lh) ? -40.0 : 0.0
+
+    // D. ADX / DI: dirección * fuerza
+    float diDir = diP >= diM ? 1.0 : -1.0
+    float adxStr = math.min(adxV, 50.0) / 50.0
+    float adxComp = diDir * adxStr * 100.0
+
+    // E. KER con dirección del movimiento
+    float dirK = close >= close[kerLen] ? 1.0 : -1.0
+    float kerComp = dirK * math.min(kerV, 1.0) * 100.0
+
+    // F. RSI de régimen (banda neutra 45-55)
+    float rsiComp = math.max(math.min((rsiV - 50.0) / 20.0, 1.0), -1.0) * 100.0
+    rsiComp := (rsiV > 45.0 and rsiV < 55.0) ? 0.0 : rsiComp
+
+    float bias = emaComp * wEma + structComp * wStruct + adxComp * wAdx + kerComp * wKer + rsiComp * wRsi
+    bias := math.max(math.min(bias, 100.0), -100.0)
+
+    [bias[o], adxV[o], kerV[o], rsiV[o]]
+
+// =====================================================================================
+//  HELPERS de clasificación de bias
+// =====================================================================================
+f_isBull(float s)       => s >= biasWeakThresh
+f_isBear(float s)       => s <= -biasWeakThresh
+f_isStrongBull(float s) => s >= biasStrongThresh
+f_isStrongBear(float s) => s <= -biasStrongThresh
+f_notBear(float s)      => s > -biasWeakThresh
+f_notBull(float s)      => s < biasWeakThresh
+
+// Etiqueta por TF (5 estados)
+f_biasLabel(float s) =>
+    string r = "Rango / Neutral"
+    if s >= biasStrongThresh
+        r := "Alcista fuerte"
+    else if s >= biasWeakThresh
+        r := "Alcista débil"
+    else if s <= -biasStrongThresh
+        r := "Bajista fuerte"
+    else if s <= -biasWeakThresh
+        r := "Bajista débil"
+    r
+
+// Etiqueta agregada (incluye "moderado")
+f_biasLabelAgg(float s) =>
+    string r = "Neutral"
+    if s >= biasStrongThresh
+        r := "Alcista fuerte"
+    else if s >= 25.0
+        r := "Alcista moderado"
+    else if s >= 10.0
+        r := "Alcista débil"
+    else if s <= -biasStrongThresh
+        r := "Bajista fuerte"
+    else if s <= -25.0
+        r := "Bajista moderado"
+    else if s <= -10.0
+        r := "Bajista débil"
+    r
+
+// Clave normalizada para JSON
+f_biasKey(float s) =>
+    string r = "neutral"
+    if s >= biasStrongThresh
+        r := "bullish_strong"
+    else if s >= 25.0
+        r := "bullish_moderate"
+    else if s >= 10.0
+        r := "bullish_weak"
+    else if s <= -biasStrongThresh
+        r := "bearish_strong"
+    else if s <= -25.0
+        r := "bearish_moderate"
+    else if s <= -10.0
+        r := "bearish_weak"
+    r
+
+f_biasColor(float s) =>
+    color c = colNeutral
+    if s >= biasStrongThresh
+        c := colUpStrong
+    else if s >= biasWeakThresh
+        c := colUpWeak
+    else if s <= -biasStrongThresh
+        c := colDownStrong
+    else if s <= -biasWeakThresh
+        c := colDownWeak
+    c
+
+// =====================================================================================
+//  5. MOTOR DE RIESGO  ->  multiplicador {0, 0.25, 0.5, 1, 1.5, 2}
+// =====================================================================================
+f_riskLong(bool zoneOk, bool brkDn, float bh, float bd, float bm, float mtf, int exPts) =>
+    float r = 0.0
+    if zoneOk and not brkDn
+        if f_isStrongBear(bh) or f_isStrongBear(bd)
+            r := math.min(maxRiskAgainstHTF, 0.5)
+        else if f_notBear(bh) and f_notBear(bd)
+            if allow2xRisk and f_isBull(bh) and f_isBull(bd) and f_isBull(bm) and exPts < 4
+                r := 2.0
+            else if f_isBull(bh) and f_notBear(bd)
+                r := 1.5
+            else
+                r := 1.0
+        else
+            r := 0.5
+        if math.abs(mtf) < biasWeakThresh
+            r := math.min(r, 1.0)
+        if exPts >= 6
+            r := math.min(r, 0.5)
+    r
+
+f_riskShort(bool zoneOk, bool brkUp, float bh, float bd, float bm, float mtf, int exPts) =>
+    float r = 0.0
+    if zoneOk and not brkUp
+        if f_isStrongBull(bh) or f_isStrongBull(bd)
+            r := math.min(maxRiskAgainstHTF, 0.5)
+        else if f_notBull(bh) and f_notBull(bd)
+            if allow2xRisk and f_isBear(bh) and f_isBear(bd) and f_isBear(bm) and exPts < 4
+                r := 2.0
+            else if f_isBear(bh) and f_notBull(bd)
+                r := 1.5
+            else
+                r := 1.0
+        else
+            r := 0.5
+        if math.abs(mtf) < biasWeakThresh
+            r := math.min(r, 1.0)
+        if exPts >= 6
+            r := math.min(r, 0.5)
+    r
+
+// =====================================================================================
+//  8. MOTOR RUNNER 10%
+// =====================================================================================
+f_runnerLong(bool atTop, bool brkUp, float mtf, float bh, float bd, int exPts, bool adxRise, bool kerRise, bool rej) =>
+    string st = "—"
+    if atTop
+        if f_isStrongBear(bh) or f_isStrongBear(bd) or exPts >= 6 or rej
+            st := "CERRAR EN RESISTENCIA"
+        else if mtf >= runnerMinMTFBias and bh >= biasWeakThresh and not f_isStrongBear(bd) and adxRise and kerRise and exPts < 4
+            st := brkUp ? "PERMITIDO" : (runnerNeedsBreakoutConfirm ? "SOLO SI BREAKOUT CONFIRMA" : "PERMITIDO")
+        else
+            st := "CERRAR EN RESISTENCIA"
+    st
+
+f_runnerShort(bool atBottom, bool brkDn, float mtf, float bh, float bd, int exPts, bool adxRise, bool kerRise, bool rej) =>
+    string st = "—"
+    if atBottom
+        if f_isStrongBull(bh) or f_isStrongBull(bd) or exPts >= 6 or rej
+            st := "CERRAR EN SOPORTE"
+        else if mtf <= -runnerMinMTFBias and bh <= -biasWeakThresh and not f_isStrongBull(bd) and adxRise and kerRise and exPts < 4
+            st := brkDn ? "PERMITIDO" : (runnerNeedsBreakoutConfirm ? "SOLO SI BREAKOUT CONFIRMA" : "PERMITIDO")
+        else
+            st := "CERRAR EN SOPORTE"
+    st
+
+// Estado de agotamiento desde puntos
+f_exState(int p) =>
+    string r = "No"
+    if p >= 6
+        r := "Alto"
+    else if p >= 4
+        r := "Moderado"
+    else if p >= 2
+        r := "Leve"
+    r
+
+// =====================================================================================
+//  HELPERS de presentación
+// =====================================================================================
+f_tfLabel(string tf) =>
+    string t = tf == "" ? timeframe.period : tf
+    string r = t
+    if t == "15"
+        r := "15m"
+    else if t == "30"
+        r := "30m"
+    else if t == "60"
+        r := "1H"
+    else if t == "120"
+        r := "2H"
+    else if t == "240"
+        r := "4H"
+    else if t == "D"
+        r := "1D"
+    else if t == "W"
+        r := "1W"
+    else if t == "M"
+        r := "1M"
+    r
+
+f_locNice(string l) =>
+    string r = l
+    if l == "SOPORTE"
+        r := "Soporte"
+    else if l == "ZONA BAJA"
+        r := "Zona baja"
+    else if l == "MEDIO"
+        r := "Medio del rango"
+    else if l == "ZONA ALTA"
+        r := "Zona alta"
+    else if l == "RESISTENCIA"
+        r := "Resistencia"
+    else if l == "RUPTURA ALCISTA"
+        r := "Ruptura alcista"
+    else if l == "RUPTURA BAJISTA"
+        r := "Ruptura bajista"
+    else if l == "FUERA DE RANGO"
+        r := "Fuera de rango"
+    r
+
+f_zoneKey(string l) =>
+    string r = "middle"
+    if l == "SOPORTE"
+        r := "support"
+    else if l == "ZONA BAJA"
+        r := "low"
+    else if l == "ZONA ALTA"
+        r := "high"
+    else if l == "RESISTENCIA"
+        r := "resistance"
+    else if l == "RUPTURA ALCISTA"
+        r := "breakout_up"
+    else if l == "RUPTURA BAJISTA"
+        r := "breakout_down"
+    else if l == "FUERA DE RANGO"
+        r := "out_of_range"
+    r
+
+f_zoneColor(string l) =>
+    color c = colNeutral
+    if l == "SOPORTE" or l == "ZONA BAJA"
+        c := colUpStrong
+    else if l == "RESISTENCIA" or l == "ZONA ALTA"
+        c := colDownStrong
+    else if l == "RUPTURA ALCISTA"
+        c := colInfo
+    else if l == "RUPTURA BAJISTA"
+        c := colInfo
+    else if l == "FUERA DE RANGO"
+        c := colInfo
+    c
+
+f_rangeColor(string s) =>
+    color c = colNeutral
+    if s == "Rango válido"
+        c := colUpStrong
+    else if s == "Rango débil" or s == "Transición"
+        c := colCaution
+    else if s == "Rango muy estrecho"
+        c := colNeutral
+    else if s == "Rango volátil"
+        c := colDownStrong
+    else if s == "Posible ruptura"
+        c := colInfo
+    else if s == "No rango"
+        c := colNo
+    c
+
+f_runnerColor(string s) =>
+    color c = colNeutral
+    if s == "PERMITIDO"
+        c := colUpStrong
+    else if s == "SOLO SI BREAKOUT CONFIRMA"
+        c := colCaution
+    else if s == "CERRAR EN RESISTENCIA" or s == "CERRAR EN SOPORTE"
+        c := colDownStrong
+    c
+
+f_runnerLabel(string s) =>
+    string r = "—"
+    if s == "PERMITIDO"
+        r := "Permitido"
+    else if s == "SOLO SI BREAKOUT CONFIRMA"
+        r := "Solo si rompe"
+    else if s == "CERRAR EN RESISTENCIA"
+        r := "Cerrar en resistencia"
+    else if s == "CERRAR EN SOPORTE"
+        r := "Cerrar en soporte"
+    r
+
+f_runnerKey(string s) =>
+    string r = "none"
+    if s == "PERMITIDO"
+        r := "allowed"
+    else if s == "SOLO SI BREAKOUT CONFIRMA"
+        r := "needs_breakout"
+    else if s == "CERRAR EN RESISTENCIA" or s == "CERRAR EN SOPORTE"
+        r := "close"
+    r
+
+f_riskColor(float r) =>
+    color c = colNeutral
+    if r <= 0.0
+        c := colNo
+    else if r < 1.0
+        c := colCaution
+    else if r <= 1.0
+        c := colInfo
+    else if r <= 1.5
+        c := colUpWeak
+    else
+        c := colUpStrong
+    c
+
+f_exColor(string s) =>
+    color c = colUpStrong
+    if s == "Leve"
+        c := colNeutral
+    else if s == "Moderado"
+        c := colCaution
+    else if s == "Alto"
+        c := colDownStrong
+    c
+
+f_scoreColor(float s) =>
+    color c = colNo
+    if s >= scoreOperateMin
+        c := colUpStrong
+    else if s >= scoreCautionMin
+        c := colCaution
+    c
+
+f_rsiColor(float r) =>
+    color c = colNeutral
+    if r >= rsiOB
+        c := colDownStrong
+    else if r <= rsiOS
+        c := colUpStrong
+    c
+
+f_pos(string s) =>
+    s == "Top Right" ? position.top_right : s == "Top Left" ? position.top_left : s == "Bottom Right" ? position.bottom_right : s == "Bottom Left" ? position.bottom_left : position.middle_right
+
+f_txt(string s) =>
+    s == "Tiny" ? size.tiny : s == "Normal" ? size.normal : s == "Large" ? size.large : size.small
+
+// Pintar una fila (2 columnas) del panel
+f_row(table p, int rw, string lTxt, string vTxt, color lc, color vc, color lbg, color vbg, string sz) =>
+    table.cell(p, 0, rw, lTxt, text_color = lc, bgcolor = lbg, text_size = sz, text_halign = text.align_left)
+    table.cell(p, 1, rw, vTxt, text_color = vc, bgcolor = vbg, text_size = sz, text_halign = text.align_left)
+
+// =====================================================================================
+//  CÁLCULOS GLOBALES
+// =====================================================================================
+// --- 1. Tendencia MTF (no repaint: lookahead_off + barra cerrada opcional) ----------
+simple int secOff = confirmHTF ? 1 : 0
+string tfOp = tfOperative == "" ? timeframe.period : tfOperative
+
+[b15, adx15, ker15, rsi15] = request.security(syminfo.tickerid, tfFast,  f_trendPack(secOff), lookahead = barmerge.lookahead_off)
+[bOp, adxOp, kerOp, rsiOp] = request.security(syminfo.tickerid, tfOp,    f_trendPack(secOff), lookahead = barmerge.lookahead_off)
+[bH,  adxH,  kerH,  rsiH ] = request.security(syminfo.tickerid, tfHTF,   f_trendPack(secOff), lookahead = barmerge.lookahead_off)
+[bD,  adxD,  kerD,  rsiD ] = request.security(syminfo.tickerid, tfDaily, f_trendPack(secOff), lookahead = barmerge.lookahead_off)
+[bM,  adxM,  kerM,  rsiM ] = request.security(syminfo.tickerid, tfMacro, f_trendPack(secOff), lookahead = barmerge.lookahead_off)
+
+float wSum = w15 + wOp + wHtf + wDaily + wMacro
+float mtfBias = wSum > 0.0 ? (b15 * w15 + bOp * wOp + bH * wHtf + bD * wDaily + bM * wMacro) / wSum : 0.0
+
+// --- Indicadores nativos del gráfico (TF operativo real) ----------------------------
+float emaFc = ta.ema(close, emaFastLen)
+float emaSc = ta.ema(close, emaSlowLen)
+float atrC  = ta.atr(atrLen)
+[diPc, diMc, adxC] = ta.dmi(adxLen, adxLen)
+float kerC  = f_ker(close, kerLen)
+float rsiC  = ta.rsi(close, rsiLen)
+float rangeTr = ta.highest(high, chopLen) - ta.lowest(low, chopLen)
+float chopC = rangeTr > 0.0 ? 100.0 * math.log10(math.sum(ta.tr(true), chopLen) / rangeTr) / math.log10(chopLen) : 50.0
+float bbBasis = ta.sma(close, bbLen)
+float bbDev   = bbMult * ta.stdev(close, bbLen)
+float bbUpper = bbBasis + bbDev
+float bbLower = bbBasis - bbDev
+
+// --- 2/3. Soporte / Resistencia operativos ------------------------------------------
+float donHigh = ta.highest(high, rangeLen)
+float donLow  = ta.lowest(low, rangeLen)
+float phc = ta.pivothigh(high, pivotLeft, pivotRight)
+float plc = ta.pivotlow(low, pivotLeft, pivotRight)
+var float lastResPiv = na
+var float lastSupPiv = na
+if not na(phc)
+    lastResPiv := phc
+if not na(plc)
+    lastSupPiv := plc
+
+float res = donHigh
+float sup = donLow
+if srMode == "Pivots"
+    res := nz(lastResPiv, donHigh)
+    sup := nz(lastSupPiv, donLow)
+else if srMode == "Fusion"
+    res := na(lastResPiv) ? donHigh : math.avg(donHigh, lastResPiv)
+    sup := na(lastSupPiv) ? donLow  : math.avg(donLow, lastSupPiv)
+
+float rangeW    = res - sup
+float rangeWATR = atrC != 0.0 ? rangeW / atrC : 0.0
+float rawPos    = rangeW > 0.0 ? 100.0 * (close - sup) / rangeW : 50.0
+float pos       = math.max(math.min(rawPos, 100.0), 0.0)
+float buf       = atrBuffer * atrC
+bool breakoutUp   = close > res + buf
+bool breakoutDown = close < sup - buf
+
+// --- 10. Volatilidad ----------------------------------------------------------------
+float atrMA    = ta.sma(atrC, volAtrLen)
+float atrRatio = atrMA != 0.0 ? atrC / atrMA : 1.0
+float atrPct   = ta.percentrank(atrC, volPctLen)
+string volState = atrRatio < 0.8 ? "Baja" : atrRatio < 1.3 ? "Normal" : atrRatio < volExtremeRatio ? "Alta" : "Extrema"
+float volHealth01 = atrRatio <= 1.3 ? 1.0 : atrRatio >= 2.0 ? 0.0 : 1.0 - (atrRatio - 1.3) / (2.0 - 1.3)
+bool volExtreme = atrRatio >= volExtremeRatio
+
+// --- 10. Volumen (fallback n/a si no es fiable) -------------------------------------
+float volSma = ta.sma(volume, volAvgLen)
+bool volOk = not na(volume) and volume > 0.0 and not na(volSma) and volSma > 0.0
+float relVol = volOk ? volume / volSma : na
+string volStateStr = not volOk ? "n/a" : relVol >= 1.5 ? "Alto" : relVol >= 0.7 ? "Normal" : "Bajo"
+
+// --- 4. Calidad de rango (0..1) -----------------------------------------------------
+float adxR = adxC <= adxRangeMax ? 1.0 : adxC >= adxTrendLevel ? 0.0 : (adxTrendLevel - adxC) / (adxTrendLevel - adxRangeMax)
+float kerR = kerC <= kerRangeMax ? 1.0 : kerC >= kerTrendLevel ? 0.0 : (kerTrendLevel - kerC) / (kerTrendLevel - kerRangeMax)
+float chopR = math.max(math.min((chopC - 38.2) / (61.8 - 38.2), 1.0), 0.0)
+float widthR = (rangeWATR >= minRangeATR and rangeWATR <= maxRangeATR) ? 1.0 : rangeWATR < minRangeATR ? math.max(rangeWATR / minRangeATR, 0.0) : math.max(1.0 - (rangeWATR - maxRangeATR) / maxRangeATR, 0.0)
+float rangeQual01 = adxR * 0.30 + kerR * 0.25 + chopR * 0.20 + widthR * 0.15 + volHealth01 * 0.10
+
+// --- 2. Estado de rango -------------------------------------------------------------
+string rangeState = "No rango"
+if breakoutUp or breakoutDown
+    rangeState := "Posible ruptura"
+else if volExtreme
+    rangeState := "Rango volátil"
+else if adxC > adxTrendLevel and kerC > kerTrendLevel
+    rangeState := "No rango"
+else if rangeWATR < minRangeATR
+    rangeState := "Rango muy estrecho"
+else if rangeWATR > maxRangeATR
+    rangeState := "Rango volátil"
+else if rangeQual01 >= 0.65
+    rangeState := "Rango válido"
+else if rangeQual01 >= 0.45
+    rangeState := "Rango débil"
+else if adxC > adxRangeMax or kerC > kerRangeMax
+    rangeState := "Transición"
+else
+    rangeState := "No rango"
+
+// --- 4. Ubicación dentro del rango --------------------------------------------------
+string locState = "MEDIO"
+if breakoutUp
+    locState := "RUPTURA ALCISTA"
+else if breakoutDown
+    locState := "RUPTURA BAJISTA"
+else if pos < supportZonePct
+    locState := "SOPORTE"
+else if pos < middleLowPct
+    locState := "ZONA BAJA"
+else if pos <= middleHighPct
+    locState := "MEDIO"
+else if pos < resistZonePct
+    locState := "ZONA ALTA"
+else
+    locState := "RESISTENCIA"
+
+bool longZone  = locState == "SOPORTE" or locState == "ZONA BAJA"
+bool shortZone = locState == "RESISTENCIA" or locState == "ZONA ALTA"
+bool midZone   = locState == "MEDIO"
+bool atTop     = locState == "ZONA ALTA" or locState == "RESISTENCIA" or locState == "RUPTURA ALCISTA"
+bool atBottom  = locState == "ZONA BAJA" or locState == "SOPORTE" or locState == "RUPTURA BAJISTA"
+
+// --- 9. Agotamiento -----------------------------------------------------------------
+float distEmaATR = atrC != 0.0 ? math.abs(close - emaSc) / atrC : 0.0
+bool rsiHot  = rsiC >= rsiOB
+bool rsiCold = rsiC <= rsiOS
+bool bbTouchUp = high >= bbUpper
+bool bbTouchDn = low <= bbLower
+var int upCnt = 0
+var int dnCnt = 0
+upCnt := close > close[1] ? upCnt + 1 : 0
+dnCnt := close < close[1] ? dnCnt + 1 : 0
+bool extendedUp = upCnt >= exhaustStreak
+bool extendedDn = dnCnt >= exhaustStreak
+bool volSpike = volOk and relVol >= volSpikeMult
+bool rejUp = high >= res - buf and close < open and (high - close) > (close - low)
+bool rejDn = low  <= sup + buf and close > open and (close - low) > (high - close)
+
+int exUpPts = 0
+exUpPts += rsiHot ? 2 : 0
+exUpPts += distEmaATR > exhaustDistATR and close > emaSc ? 2 : 0
+exUpPts += bbTouchUp ? 1 : 0
+exUpPts += extendedUp ? 1 : 0
+exUpPts += volSpike and close < open ? 1 : 0
+exUpPts += rejUp ? 2 : 0
+
+int exDnPts = 0
+exDnPts += rsiCold ? 2 : 0
+exDnPts += distEmaATR > exhaustDistATR and close < emaSc ? 2 : 0
+exDnPts += bbTouchDn ? 1 : 0
+exDnPts += extendedDn ? 1 : 0
+exDnPts += volSpike and close > open ? 1 : 0
+exDnPts += rejDn ? 2 : 0
+
+string exUpState = f_exState(exUpPts)
+string exDnState = f_exState(exDnPts)
+string exShownState = atTop ? exUpState : atBottom ? exDnState : (exUpPts >= exDnPts ? exUpState : exDnState)
+
+bool adxRise = adxC > adxC[adxRiseLen]
+bool kerRise = kerC > kerC[kerRiseLen]
+
+// --- 11. TQI (Trend Quality Index 0..1) ---------------------------------------------
+float adxN  = math.min(adxC / adxTrendLevel, 1.0)
+float kerN  = math.min(kerC, 1.0)
+float emaCoh = (close > emaFc and emaFc > emaSc) or (close < emaFc and emaFc < emaSc) ? 1.0 : 0.0
+float slopeN = math.min(math.abs(f_slopeAtr(emaFc, slopeLen, atrC)) / (slopeThresh * 3.0), 1.0)
+float mtfAlignN = math.abs(mtfBias) / 100.0
+float tqi = adxN * 0.30 + kerN * 0.25 + emaCoh * 0.15 + slopeN * 0.15 + mtfAlignN * 0.15
+
+// --- 5/6. Riesgo + Gate -------------------------------------------------------------
+float riskLong  = f_riskLong(longZone, breakoutDown, bH, bD, bM, mtfBias, exDnPts)
+float riskShort = f_riskShort(shortZone, breakoutUp, bH, bD, bM, mtfBias, exUpPts)
+string side = longZone ? "LONG" : shortZone ? "SHORT" : "—"
+float riskMult = longZone ? riskLong : shortZone ? riskShort : 0.0
+
+string gateCode = "WAIT_CONFIRMATION"
+if volExtreme or rangeState == "Rango volátil"
+    gateCode := "CLOSED_VOLATILITY"
+else if breakoutUp or breakoutDown
+    gateCode := "CLOSED_BREAKOUT_RISK"
+else if rangeState == "No rango"
+    gateCode := "CLOSED_NO_RANGE"
+else if midZone
+    gateCode := "CLOSED_MIDDLE_RANGE"
+else if longZone
+    if riskLong <= 0.0
+        gateCode := "CLOSED_NO_RANGE"
+    else if riskLong >= 1.0 and f_notBear(bH)
+        gateCode := "OPEN_LONG_SUPPORT"
+    else
+        gateCode := "CAUTION_LONG_SUPPORT"
+else if shortZone
+    if riskShort <= 0.0
+        gateCode := "CLOSED_NO_RANGE"
+    else if riskShort >= 1.0 and f_notBull(bH)
+        gateCode := "OPEN_SHORT_RESISTANCE"
+    else
+        gateCode := "CAUTION_SHORT_RESISTANCE"
+else
+    gateCode := "WAIT_CONFIRMATION"
+
+// Transición rebaja a esperar; agotamiento extremo contra tendencia cierra
+if rangeState == "Transición" and (gateCode == "OPEN_LONG_SUPPORT" or gateCode == "OPEN_SHORT_RESISTANCE")
+    gateCode := "WAIT_CONFIRMATION"
+if longZone and exDnPts >= 6 and f_isBear(bH) and f_isBear(bD)
+    gateCode := "CLOSED_EXHAUSTION"
+if shortZone and exUpPts >= 6 and f_isBull(bH) and f_isBull(bD)
+    gateCode := "CLOSED_EXHAUSTION"
+
+// --- 7. Scores ----------------------------------------------------------------------
+float locLong01  = pos <= supportZonePct ? 1.0 : pos >= middleHighPct ? 0.0 : (middleHighPct - pos) / (middleHighPct - supportZonePct)
+float locShort01 = pos >= resistZonePct ? 1.0 : pos <= middleLowPct ? 0.0 : (pos - middleLowPct) / (resistZonePct - middleLowPct)
+float mtfLong01  = math.max(mtfBias, 0.0) / 100.0
+float mtfShort01 = math.max(-mtfBias, 0.0) / 100.0
+float exLong01   = 1.0 - math.min(exDnPts / 8.0, 1.0)
+float exShort01  = 1.0 - math.min(exUpPts / 8.0, 1.0)
+float longScore  = (rangeQual01 * 0.35 + locLong01 * 0.25 + mtfLong01 * 0.25 + volHealth01 * 0.10 + exLong01 * 0.05) * 100.0
+float shortScore = (rangeQual01 * 0.35 + locShort01 * 0.25 + mtfShort01 * 0.25 + volHealth01 * 0.10 + exShort01 * 0.05) * 100.0
+float rangeScore = rangeQual01 * 100.0
+float scoreShown = longZone ? longScore : shortZone ? shortScore : math.max(longScore, shortScore)
+
+// --- 8. Runner 10% (según extremo en el que esté el precio) --------------------------
+string runnerLong  = f_runnerLong(atTop, breakoutUp, mtfBias, bH, bD, exUpPts, adxRise, kerRise, rejUp)
+string runnerShort = f_runnerShort(atBottom, breakoutDown, mtfBias, bH, bD, exDnPts, adxRise, kerRise, rejDn)
+string runnerState = atTop ? runnerLong : atBottom ? runnerShort : "—"
+
+// =====================================================================================
+//  TEXTOS / COLORES DE GATE Y CADENAS DE PANEL
+// =====================================================================================
+string gateAction = "ESPERAR"
+string gateStatus = "EN ESPERA"
+string gateReason = "Esperar confirmación"
+color  gateCol    = colInfo
+if gateCode == "OPEN_LONG_SUPPORT"
+    gateAction := "OPERAR"
+    gateStatus := "ABIERTA"
+    gateReason := "Soporte + tendencia a favor"
+    gateCol := colUpStrong
+else if gateCode == "OPEN_SHORT_RESISTANCE"
+    gateAction := "OPERAR"
+    gateStatus := "ABIERTA"
+    gateReason := "Resistencia + tendencia a favor"
+    gateCol := colDownStrong
+else if gateCode == "CAUTION_LONG_SUPPORT"
+    gateAction := "CAUTELA"
+    gateStatus := "SEMIABIERTA"
+    gateReason := "Soporte pero HTF no acompaña"
+    gateCol := colCaution
+else if gateCode == "CAUTION_SHORT_RESISTANCE"
+    gateAction := "CAUTELA"
+    gateStatus := "SEMIABIERTA"
+    gateReason := "Resistencia pero HTF no acompaña"
+    gateCol := colCaution
+else if gateCode == "CLOSED_MIDDLE_RANGE"
+    gateAction := "NO OPERAR"
+    gateStatus := "CERRADA"
+    gateReason := "Medio del rango"
+    gateCol := colNo
+else if gateCode == "CLOSED_NO_RANGE"
+    gateAction := "NO OPERAR"
+    gateStatus := "CERRADA"
+    gateReason := "Sin rango operable"
+    gateCol := colNo
+else if gateCode == "CLOSED_BREAKOUT_RISK"
+    gateAction := "NO OPERAR"
+    gateStatus := "CERRADA"
+    gateReason := "Posible ruptura"
+    gateCol := colNo
+else if gateCode == "CLOSED_VOLATILITY"
+    gateAction := "NO OPERAR"
+    gateStatus := "CERRADA"
+    gateReason := "Volatilidad extrema"
+    gateCol := colNo
+else if gateCode == "CLOSED_EXHAUSTION"
+    gateAction := "NO OPERAR"
+    gateStatus := "CERRADA"
+    gateReason := "Agotamiento extremo"
+    gateCol := colNo
+
+string riskStr   = str.tostring(riskMult, "0.##") + "x"
+string zoneKey   = f_zoneKey(locState)
+string biasKey   = f_biasKey(mtfBias)
+string runnerKey = f_runnerKey(runnerState)
+
+string zoneWord  = longZone ? "soporte" : shortZone ? "resistencia" : "medio"
+string opValue   = side == "—" ? gateReason : side + " " + zoneWord + " / Riesgo " + riskStr
+string scoreStr  = "Score: " + str.tostring(scoreShown, "0.0")
+string biasMtfStr = f_biasLabelAgg(mtfBias) + " (" + str.tostring(mtfBias, "0") + ")"
+string rangeInfoStr = "Pos " + str.tostring(pos, "0") + "% · " + str.tostring(rangeWATR, "0.0") + " ATR · Q" + str.tostring(rangeScore, "0")
+string adxStr = str.tostring(adxC, "0.0")
+string kerStr = str.tostring(kerC, "0.00")
+string tqiStr = str.tostring(tqi, "0.00")
+string rsiStr = str.tostring(rsiC, "0.0")
+string volStr = volState + " · " + str.tostring(atrPct, "0") + "pct"
+string volumeStr = volOk ? volStateStr + " · " + str.tostring(relVol, "0.0") + "x" : "n/a"
+string locNice = f_locNice(locState)
+string runnerLbl = f_runnerLabel(runnerState)
+
+color scoreCol  = f_scoreColor(scoreShown)
+color biasCol   = f_biasColor(mtfBias)
+color zoneCol   = f_zoneColor(locState)
+color riskCol   = f_riskColor(riskMult)
+color runnerCol = f_runnerColor(runnerState)
+color rangeCol  = f_rangeColor(rangeState)
+color exCol     = f_exColor(exShownState)
+color rsiCol    = f_rsiColor(rsiC)
+
+// =====================================================================================
+//  12. PANEL VISUAL
+// =====================================================================================
+var table p = na
+if showPanel and barstate.islast
+    int nRows = panelMode == "Full" ? 21 : panelMode == "Compact" ? 12 : 5
+    if na(p)
+        p := table.new(f_pos(panelPosition), 2, nRows, bgcolor = bgPanel, frame_color = bgFrame, frame_width = 1, border_color = bgFrame, border_width = 1)
+    string sz = f_txt(textSize)
+    color actBg = color.new(gateCol, 78)
+    f_row(p, 0, "QRCM Range V1.0", scoreStr, txtMain, scoreCol, bgHeader, bgHeader, sz)
+    if panelMode == "Full"
+        f_row(p, 1, gateAction, opValue, color.white, txtMain, gateCol, actBg, sz)
+        f_row(p, 2, "Gate", gateStatus + " — " + gateReason, txtMuted, gateCol, bgHeader, bgPanel, sz)
+        f_row(p, 3, "Modo", rangeState, txtMuted, rangeCol, bgHeader, bgPanel, sz)
+        f_row(p, 4, "Zona", locNice, txtMuted, zoneCol, bgHeader, bgPanel, sz)
+        f_row(p, 5, "Riesgo", riskStr, txtMuted, riskCol, bgHeader, bgPanel, sz)
+        f_row(p, 6, "Swing 10%", runnerLbl, txtMuted, runnerCol, bgHeader, bgPanel, sz)
+        f_row(p, 7, "Bias MTF", biasMtfStr, txtMuted, biasCol, bgHeader, bgPanel, sz)
+        f_row(p, 8, f_tfLabel(tfFast), f_biasLabel(b15), txtMuted, f_biasColor(b15), bgHeader, bgPanel, sz)
+        f_row(p, 9, f_tfLabel(tfOp), f_biasLabel(bOp), txtMuted, f_biasColor(bOp), bgHeader, bgPanel, sz)
+        f_row(p, 10, f_tfLabel(tfHTF), f_biasLabel(bH), txtMuted, f_biasColor(bH), bgHeader, bgPanel, sz)
+        f_row(p, 11, f_tfLabel(tfDaily), f_biasLabel(bD), txtMuted, f_biasColor(bD), bgHeader, bgPanel, sz)
+        f_row(p, 12, f_tfLabel(tfMacro), f_biasLabel(bM), txtMuted, f_biasColor(bM), bgHeader, bgPanel, sz)
+        f_row(p, 13, "Rango", rangeInfoStr, txtMuted, colNeutral, bgHeader, bgPanel, sz)
+        f_row(p, 14, "ADX", adxStr, txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 15, "KER", kerStr, txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 16, "TQI", tqiStr, txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 17, "Agotamiento", exShownState, txtMuted, exCol, bgHeader, bgPanel, sz)
+        f_row(p, 18, "RSI", rsiStr, txtMuted, rsiCol, bgHeader, bgPanel, sz)
+        f_row(p, 19, "Volatilidad", volStr, txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 20, "Volumen", volumeStr, txtMuted, colNeutral, bgHeader, bgPanel, sz)
+    else if panelMode == "Compact"
+        f_row(p, 1, gateAction, opValue, color.white, txtMain, gateCol, actBg, sz)
+        f_row(p, 2, "Modo", rangeState, txtMuted, rangeCol, bgHeader, bgPanel, sz)
+        f_row(p, 3, "Zona", locNice, txtMuted, zoneCol, bgHeader, bgPanel, sz)
+        f_row(p, 4, "Riesgo", riskStr, txtMuted, riskCol, bgHeader, bgPanel, sz)
+        f_row(p, 5, "Swing 10%", runnerLbl, txtMuted, runnerCol, bgHeader, bgPanel, sz)
+        f_row(p, 6, "Bias MTF", biasMtfStr, txtMuted, biasCol, bgHeader, bgPanel, sz)
+        f_row(p, 7, f_tfLabel(tfHTF), f_biasLabel(bH), txtMuted, f_biasColor(bH), bgHeader, bgPanel, sz)
+        f_row(p, 8, f_tfLabel(tfDaily), f_biasLabel(bD), txtMuted, f_biasColor(bD), bgHeader, bgPanel, sz)
+        f_row(p, 9, "ADX", adxStr, txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 10, "KER", kerStr, txtMuted, colInfo, bgHeader, bgPanel, sz)
+        f_row(p, 11, "RSI", rsiStr, txtMuted, rsiCol, bgHeader, bgPanel, sz)
+    else
+        f_row(p, 1, gateAction, opValue, color.white, txtMain, gateCol, actBg, sz)
+        f_row(p, 2, "Zona", locNice, txtMuted, zoneCol, bgHeader, bgPanel, sz)
+        f_row(p, 3, "Bias", biasMtfStr, txtMuted, biasCol, bgHeader, bgPanel, sz)
+        f_row(p, 4, "Swing 10%", runnerLbl, txtMuted, runnerCol, bgHeader, bgPanel, sz)
+
+// =====================================================================================
+//  13. NIVELES EN GRÁFICO
+// =====================================================================================
+pRes = plot(showLevels and showRangeLines ? res : na, "Resistencia", color = color.new(colDownStrong, 0), linewidth = 1, style = plot.style_linebr)
+pSup = plot(showLevels and showRangeLines ? sup : na, "Soporte", color = color.new(colUpStrong, 0), linewidth = 1, style = plot.style_linebr)
+plot(showLevels and showRangeLines ? (res + sup) / 2.0 : na, "Medio del rango", color = color.new(colNeutral, 40), linewidth = 1, style = plot.style_linebr)
+
+float supTop = sup + rangeW * supportZonePct / 100.0
+float resBot = sup + rangeW * resistZonePct / 100.0
+pSupZ   = plot(showLevels and showRangeZones ? sup : na,    "z_sup",    display = display.none)
+pSupTop = plot(showLevels and showRangeZones ? supTop : na, "z_supTop", display = display.none)
+pResZ   = plot(showLevels and showRangeZones ? res : na,    "z_res",    display = display.none)
+pResBot = plot(showLevels and showRangeZones ? resBot : na, "z_resBot", display = display.none)
+fill(pSupZ, pSupTop, color = color.new(colUpStrong, 90), title = "Zona soporte")
+fill(pResBot, pResZ, color = color.new(colDownStrong, 90), title = "Zona resistencia")
+
+// Fondo según bias MTF
+bgcolor(showBackground ? color.new(f_biasColor(mtfBias), 92) : na, title = "Fondo bias MTF")
+
+// Color de velas según gate
+color bcCol = gateCode == "OPEN_LONG_SUPPORT" ? colUpStrong : gateCode == "OPEN_SHORT_RESISTANCE" ? colDownStrong : (gateCode == "CAUTION_LONG_SUPPORT" or gateCode == "CAUTION_SHORT_RESISTANCE") ? colCaution : na
+barcolor(showBarColor ? bcCol : na, title = "Color velas gate")
+
+// Etiquetas solo cuando cambia el gate
+if showGateLabels and barstate.isconfirmed and gateCode != gateCode[1]
+    label.new(bar_index, high, text = gateAction, yloc = yloc.abovebar, color = color.new(gateCol, 15), style = label.style_label_down, textcolor = color.white, size = size.small)
+
+// =====================================================================================
+//  18. DEBUG (data window)
+// =====================================================================================
+plot(showDebug ? longScore : na,  "DBG LongScore",     display = display.data_window)
+plot(showDebug ? shortScore : na, "DBG ShortScore",    display = display.data_window)
+plot(showDebug ? rangeScore : na, "DBG RangeScore",    display = display.data_window)
+plot(showDebug ? mtfBias : na,    "DBG MTFBiasScore",  display = display.data_window)
+plot(showDebug ? pos : na,        "DBG RangePosition", display = display.data_window)
+plot(showDebug ? rangeWATR : na,  "DBG RangeWidthATR", display = display.data_window)
+plot(showDebug ? (breakoutUp ? 1.0 : breakoutDown ? -1.0 : 0.0) : na, "DBG BreakoutRisk", display = display.data_window)
+plot(showDebug ? (volExtreme ? 1.0 : 0.0) : na, "DBG VolatilityExtreme", display = display.data_window)
+plot(showDebug ? exUpPts : na,    "DBG ExhaustionUp",  display = display.data_window)
+plot(showDebug ? exDnPts : na,    "DBG ExhaustionDown", display = display.data_window)
+
+// =====================================================================================
+//  14/11. ALERTAS / EVENTOS ESTRUCTURADOS (JSON)
+// =====================================================================================
+f_jsonEvent(string etype) =>
+    '{' + '"event_type":"' + etype + '",' + '"symbol":"' + syminfo.tickerid + '",' + '"timeframe":"' + timeframe.period + '",' + '"gate":"' + gateCode + '",' + '"score":' + str.tostring(scoreShown, "0.0") + ',' + '"risk_multiplier":"' + riskStr + '",' + '"zone":"' + zoneKey + '",' + '"mtf_bias":"' + biasKey + '",' + '"runner_10":"' + runnerKey + '",' + '"adx":' + str.tostring(adxC, "0.0") + ',' + '"ker":' + str.tostring(kerC, "0.00") + ',' + '"tqi":' + str.tostring(tqi, "0.00") + ',' + '"rsi":' + str.tostring(rsiC, "0.0") + '}'
+
+var string prevGate   = na
+var string prevBias   = na
+var float  prevRisk   = na
+var string prevRunner = na
+var string prevRange  = na
+
+bool canAlert = enableAlerts and (alertOncePerBarClose ? barstate.isconfirmed : barstate.islast)
+if canAlert
+    if alertOnGateChange and not na(prevGate) and gateCode != prevGate
+        alert(f_jsonEvent("range_mtf.gate_changed"), alert.freq_once_per_bar)
+    if alertBiasChange and not na(prevBias) and biasKey != prevBias
+        alert(f_jsonEvent("range_mtf.bias_changed"), alert.freq_once_per_bar)
+    if alertRiskChange and not na(prevRisk) and riskMult != prevRisk
+        alert(f_jsonEvent("range_mtf.risk_changed"), alert.freq_once_per_bar)
+    if alertOnRunnerChange and not na(prevRunner) and runnerState != prevRunner
+        alert(f_jsonEvent("range_mtf.runner_changed"), alert.freq_once_per_bar)
+    if alertOnBreakoutRisk and gateCode == "CLOSED_BREAKOUT_RISK" and prevGate != "CLOSED_BREAKOUT_RISK"
+        alert(f_jsonEvent("range_mtf.breakout_risk"), alert.freq_once_per_bar)
+    if rangeState == "Rango válido" and not na(prevRange) and prevRange != "Rango válido"
+        alert(f_jsonEvent("range_mtf.range_recovered"), alert.freq_once_per_bar)
+    prevGate   := gateCode
+    prevBias   := biasKey
+    prevRisk   := riskMult
+    prevRunner := runnerState
+    prevRange  := rangeState
+
+// Alertcondition básicas (mensajes estáticos con placeholders nativos)
+alertcondition(gateCode == "OPEN_LONG_SUPPORT" and gateCode[1] != "OPEN_LONG_SUPPORT",   "QRCM OPERAR Long soporte",      "QRCM Range: OPERAR LONG en soporte — {{ticker}} {{interval}}")
+alertcondition(gateCode == "OPEN_SHORT_RESISTANCE" and gateCode[1] != "OPEN_SHORT_RESISTANCE", "QRCM OPERAR Short resistencia", "QRCM Range: OPERAR SHORT en resistencia — {{ticker}} {{interval}}")
+alertcondition(gateCode == "CLOSED_BREAKOUT_RISK" and gateCode[1] != "CLOSED_BREAKOUT_RISK", "QRCM Riesgo de ruptura", "QRCM Range: riesgo de ruptura — {{ticker}} {{interval}}")
+alertcondition(gateCode == "CLOSED_MIDDLE_RANGE" and gateCode[1] != "CLOSED_MIDDLE_RANGE", "QRCM Medio del rango", "QRCM Range: medio del rango, no operar — {{ticker}} {{interval}}")
