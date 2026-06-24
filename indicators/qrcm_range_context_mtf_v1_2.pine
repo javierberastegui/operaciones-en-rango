@@ -1,0 +1,538 @@
+// © javierberastegui
+//@version=5
+// =====================================================================================
+//  QRCM Range Context MTF V1.2
+//  Contexto multi-temporalidad (15m / 1H / 4H / 1D / 1W-1M) para operar rangos que el
+//  trader dibuja manualmente. NO depende de detectar soporte/resistencia para ser útil.
+//
+//  - El rango manual es OPCIONAL y NO bloquea la tabla: si no está configurado, muestra
+//    "RANGO MANUAL: No configurado" y sigue dando toda la lectura MTF.
+//  - 4H = sesgo principal · 1D confirma/contradice · 1H = rango operativo ·
+//    15m = timing (no cambia el sesgo) · 1W/1M = macro (no bloquea).
+//  - Tabla: SESGO RANGO / RIESGO LONG / RIESGO SHORT / 15m / 1H / 4H / 1D / 1W / LECTURA / PLAN.
+//  - Modos Simple (limpio) y Debug (métricas internas). Sin spam de etiquetas.
+//  - No repaint: request.security lookahead_off, alertas al cierre. Sin strategy.*
+//  Indicador independiente: no sustituye a V1.0 ni V1.1.
+// =====================================================================================
+indicator("QRCM Range Context MTF V1.2", "QRCM Range Context V1.2", overlay = true, max_labels_count = 10, max_lines_count = 10)
+
+// =====================================================================================
+//  INPUTS
+// =====================================================================================
+// --- General -------------------------------------------------------------------------
+gGEN          = "General"
+panelMode     = input.string("Simple", "Modo panel", options = ["Simple", "Compacto", "Debug"], group = gGEN)
+panelPosition = input.string("Top Right", "Posición panel", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group = gGEN)
+textSize      = input.string("Normal", "Tamaño texto", options = ["Tiny", "Small", "Normal", "Large"], group = gGEN)
+
+// --- Rango manual (OPCIONAL, no bloquea) --------------------------------------------
+gRNG            = "Rango manual (opcional)"
+useManualRange  = input.bool(true, "Usar rango manual", group = gRNG, tooltip = "Si lo desactivas o no fijas niveles, la tabla sigue mostrando el contexto MTF.")
+manualSupport   = input.price(0.0, "Soporte manual", group = gRNG, tooltip = "Arrástralo en el gráfico o escribe el precio. 0 = no configurado.")
+manualResistance= input.price(0.0, "Resistencia manual", group = gRNG, tooltip = "Arrástrala en el gráfico o escribe el precio. 0 = no configurado.")
+supportZonePct  = input.float(20, "Zona soporte <%",     minval = 0, maxval = 100, group = gRNG)
+middleLowPct    = input.float(40, "Medio bajo <%",       minval = 0, maxval = 100, group = gRNG)
+middleHighPct   = input.float(60, "Medio alto <=%",      minval = 0, maxval = 100, group = gRNG)
+resistanceZonePct = input.float(80, "Zona resistencia >%", minval = 0, maxval = 100, group = gRNG)
+breakoutBufferATR = input.float(0.15, "Buffer ruptura (ATR)", minval = 0, step = 0.05, group = gRNG)
+atrLen          = input.int(14, "ATR len", minval = 1, group = gRNG)
+
+// --- MTF -----------------------------------------------------------------------------
+gMTF        = "MTF"
+tfFast      = input.timeframe("15", "TF timing",     group = gMTF)
+tfOper      = input.timeframe("60", "TF operativo",  group = gMTF)
+tfHTF       = input.timeframe("240", "TF principal (sesgo)", group = gMTF)
+tfDaily     = input.timeframe("D",   "TF confirmación", group = gMTF)
+tfMacro     = input.timeframe("W",   "TF macro (1W/1M)", group = gMTF)
+confirmHTF  = input.bool(true, "HTF sin repaint (barra cerrada)", group = gMTF)
+emaFastLen  = input.int(21, "EMA rápida", minval = 1, group = gMTF)
+emaSlowLen  = input.int(55, "EMA lenta",  minval = 1, group = gMTF)
+rsiLen      = input.int(14, "RSI len",    minval = 1, group = gMTF)
+adxLen      = input.int(14, "ADX/DI len", minval = 1, group = gMTF)
+kerLen      = input.int(20, "KER len",    minval = 1, group = gMTF)
+slopeLen    = input.int(5,  "Slope len",  minval = 1, group = gMTF)
+slopeThresh = input.float(0.05, "Slope mínimo (ATR/barra)", minval = 0, step = 0.01, group = gMTF)
+pivLeftTrend  = input.int(3, "Estructura: pivote izq.", minval = 1, group = gMTF)
+pivRightTrend = input.int(3, "Estructura: pivote der.", minval = 1, group = gMTF)
+biasWeakThresh   = input.float(20, "Umbral débil",  minval = 1, group = gMTF)
+biasStrongThresh = input.float(50, "Umbral fuerte", minval = 1, group = gMTF)
+w15  = input.float(5,  "Peso 15m (agregado)", minval = 0, group = gMTF)
+wOp  = input.float(15, "Peso 1H (agregado)",  minval = 0, group = gMTF)
+wHtf = input.float(40, "Peso 4H (agregado)",  minval = 0, group = gMTF)
+wDay = input.float(30, "Peso 1D (agregado)",  minval = 0, group = gMTF)
+wMac = input.float(10, "Peso macro (agregado)", minval = 0, group = gMTF)
+
+// --- Visual --------------------------------------------------------------------------
+gVS                  = "Visual"
+showRangeLines       = input.bool(true, "Líneas S/R (si configurado)", group = gVS)
+showRangeZones       = input.bool(true, "Zonas S/R (si configurado)", group = gVS)
+showMiddleNoTradeZone= input.bool(true, "Zona media (NO OPERAR)", group = gVS)
+
+// --- Alertas -------------------------------------------------------------------------
+gAL                = "Alertas"
+enableAlerts       = input.bool(true, "Habilitar alertas", group = gAL)
+alertBias          = input.bool(true, "Alerta cambio de sesgo", group = gAL)
+alertRisk          = input.bool(true, "Alerta cambio de riesgo", group = gAL)
+alertReading       = input.bool(true, "Alerta cambio de lectura", group = gAL)
+alertZone          = input.bool(true, "Alerta cambio de zona (si configurado)", group = gAL)
+alertOncePerBarClose = input.bool(true, "Solo al cierre de vela", group = gAL)
+
+// =====================================================================================
+//  CONSTANTES (colores + pesos internos)
+// =====================================================================================
+var float cwEma    = 0.30
+var float cwStruct = 0.20
+var float cwAdx    = 0.20
+var float cwKer    = 0.15
+var float cwRsi    = 0.15
+
+color colLong    = #16a34a   // verde: long favorable
+color colShort   = #dc2626   // rojo: short favorable
+color colCaution = #f59e0b   // ámbar: cautela / mixto
+color colNeutral = #94a3b8   // gris: neutral / no configurado
+color colWait    = #38bdf8   // cian: esperar / info
+color bgPanel    = #0e0f13
+color bgHeader   = #1a1c22
+color bgFrame    = #2a2d36
+color txtMuted   = #b8bcc4
+color txtMain    = #e6e6e6
+
+// =====================================================================================
+//  HELPERS matemáticos
+// =====================================================================================
+f_ker(float src, simple int len) =>
+    float num = math.abs(src - src[len])
+    float den = math.sum(math.abs(src - src[1]), len)
+    den != 0.0 ? num / den : 0.0
+
+f_slopeAtr(float emaSrc, simple int len, float atrSrc) =>
+    atrSrc != 0.0 ? (emaSrc - emaSrc[len]) / len / atrSrc : 0.0
+
+// =====================================================================================
+//  MOTOR DE TENDENCIA MTF  ->  f_trendPack
+//  Devuelve [biasScore(-100..100), adx, ker, rsi] en el contexto del TF solicitado.
+// =====================================================================================
+f_trendPack(simple int o) =>
+    float emaF = ta.ema(close, emaFastLen)
+    float emaS = ta.ema(close, emaSlowLen)
+    float _atr = ta.atr(atrLen)
+    float slp  = f_slopeAtr(emaF, slopeLen, _atr)
+    [diP, diM, adxV] = ta.dmi(adxLen, adxLen)
+    float kerV = f_ker(close, kerLen)
+    float rsiV = ta.rsi(close, rsiLen)
+
+    float eC = 0.0
+    eC := eC + (close > emaF ? 1.0 : -1.0)
+    eC := eC + (emaF > emaS ? 1.0 : -1.0)
+    eC := eC + (slp > slopeThresh ? 1.0 : slp < -slopeThresh ? -1.0 : 0.0)
+    float emaComp = eC / 3.0 * 100.0
+
+    float ph = ta.pivothigh(high, pivLeftTrend, pivRightTrend)
+    float pl = ta.pivotlow(low, pivLeftTrend, pivRightTrend)
+    float lastPH = ta.valuewhen(not na(ph), ph, 0)
+    float prevPH = ta.valuewhen(not na(ph), ph, 1)
+    float lastPL = ta.valuewhen(not na(pl), pl, 0)
+    float prevPL = ta.valuewhen(not na(pl), pl, 1)
+    bool hh = lastPH > prevPH
+    bool hl = lastPL > prevPL
+    bool lh = lastPH < prevPH
+    bool ll = lastPL < prevPL
+    float structComp = (hh and hl) ? 100.0 : (ll and lh) ? -100.0 : (hh or hl) ? 40.0 : (ll or lh) ? -40.0 : 0.0
+
+    float diDir = diP >= diM ? 1.0 : -1.0
+    float adxComp = diDir * math.min(adxV, 50.0) / 50.0 * 100.0
+
+    float dirK = close >= close[kerLen] ? 1.0 : -1.0
+    float kerComp = dirK * math.min(kerV, 1.0) * 100.0
+
+    float rsiComp = math.max(math.min((rsiV - 50.0) / 20.0, 1.0), -1.0) * 100.0
+    rsiComp := (rsiV > 45.0 and rsiV < 55.0) ? 0.0 : rsiComp
+
+    float bias = emaComp * cwEma + structComp * cwStruct + adxComp * cwAdx + kerComp * cwKer + rsiComp * cwRsi
+    bias := math.max(math.min(bias, 100.0), -100.0)
+    [bias[o], adxV[o], kerV[o], rsiV[o]]
+
+// =====================================================================================
+//  CLASIFICACIÓN DE BIAS
+// =====================================================================================
+f_bull(float s)       => s >= biasWeakThresh
+f_bear(float s)       => s <= -biasWeakThresh
+f_neutral(float s)    => math.abs(s) < biasWeakThresh
+f_strongBull(float s) => s >= biasStrongThresh
+f_strongBear(float s) => s <= -biasStrongThresh
+
+f_biasLabel(float s) =>
+    string r = "Rango / Neutral"
+    if s >= biasStrongThresh
+        r := "Alcista fuerte"
+    else if s >= 35.0
+        r := "Alcista"
+    else if s >= biasWeakThresh
+        r := "Alcista débil"
+    else if s <= -biasStrongThresh
+        r := "Bajista fuerte"
+    else if s <= -35.0
+        r := "Bajista"
+    else if s <= -biasWeakThresh
+        r := "Bajista débil"
+    r
+
+f_biasKey(float s) =>
+    string r = "neutral"
+    if s >= biasStrongThresh
+        r := "bullish_strong"
+    else if s >= biasWeakThresh
+        r := "bullish"
+    else if s <= -biasStrongThresh
+        r := "bearish_strong"
+    else if s <= -biasWeakThresh
+        r := "bearish"
+    r
+
+f_biasColor(float s) =>
+    color c = colNeutral
+    if s >= biasStrongThresh
+        c := colLong
+    else if s >= biasWeakThresh
+        c := color.new(colLong, 25)
+    else if s <= -biasStrongThresh
+        c := colShort
+    else if s <= -biasWeakThresh
+        c := color.new(colShort, 25)
+    c
+
+// =====================================================================================
+//  MOTOR DE SESGO DE RANGO (4H principal, 1D confirma)  ->  [sesgo, riskLong, riskShort]
+// =====================================================================================
+f_biasDecision(float b4, float b1) =>
+    string sesgo = "Rango equilibrado"
+    float rL = 1.0
+    float rS = 1.0
+    if f_bear(b4) and f_bear(b1)
+        sesgo := "Preferir SHORT en resistencia"
+        rS := (f_strongBear(b4) and f_strongBear(b1)) ? 2.0 : 1.5
+        rL := (f_strongBear(b4) or f_strongBear(b1)) ? 0.25 : 0.5
+    else if f_bull(b4) and f_bull(b1)
+        sesgo := "Preferir LONG en soporte"
+        rL := (f_strongBull(b4) and f_strongBull(b1)) ? 2.0 : 1.5
+        rS := (f_strongBull(b4) or f_strongBull(b1)) ? 0.25 : 0.5
+    else if f_neutral(b4) and f_neutral(b1)
+        sesgo := "Rango equilibrado"
+        rL := 1.0
+        rS := 1.0
+    else if f_bear(b4) and f_bull(b1)
+        sesgo := "Evitar longs contra 4H"
+        rS := 1.0
+        rL := 0.5
+    else if f_bull(b4) and f_bear(b1)
+        sesgo := "Evitar shorts contra 4H"
+        rL := 1.0
+        rS := 0.5
+    else if f_bear(b4) and f_neutral(b1)
+        sesgo := "Preferir SHORT en resistencia"
+        rS := 1.5
+        rL := 0.5
+    else if f_bull(b4) and f_neutral(b1)
+        sesgo := "Preferir LONG en soporte"
+        rL := 1.5
+        rS := 0.5
+    else if f_neutral(b4) and f_bear(b1)
+        sesgo := "Solo extremos, riesgo reducido"
+        rS := 1.0
+        rL := 0.5
+    else if f_neutral(b4) and f_bull(b1)
+        sesgo := "Solo extremos, riesgo reducido"
+        rL := 1.0
+        rS := 0.5
+    [sesgo, rL, rS]
+
+f_reasonLong(float b4, float b1) =>
+    string r = "neutral"
+    if f_bull(b4) and f_bull(b1)
+        r := "a favor 4H/1D"
+    else if f_bull(b4)
+        r := "a favor 4H"
+    else if f_bear(b4) and f_bear(b1)
+        r := "contra 4H/1D"
+    else if f_bear(b4)
+        r := "contra 4H"
+    r
+
+f_reasonShort(float b4, float b1) =>
+    string r = "neutral"
+    if f_bear(b4) and f_bear(b1)
+        r := "a favor 4H/1D"
+    else if f_bear(b4)
+        r := "a favor 4H"
+    else if f_bull(b4) and f_bull(b1)
+        r := "contra 4H/1D"
+    else if f_bull(b4)
+        r := "contra 4H"
+    r
+
+// LECTURA: 4H domina, 15m = timing
+f_lectura(float b4, float b1, float b15) =>
+    string r = "Contexto mixto; operar solo extremos"
+    if f_neutral(b4) and f_neutral(b1)
+        r := "Rango equilibrado sin tendencia dominante"
+    else if f_bear(b4) and f_bull(b15)
+        r := "Rebote corto contra tendencia mayor"
+    else if f_bull(b4) and f_bear(b15)
+        r := "Pullback corto dentro de tendencia mayor"
+    else if f_bull(b4)
+        r := "Tendencia 4H alcista; favorecer longs en soporte"
+    else if f_bear(b4)
+        r := "Tendencia 4H bajista; favorecer shorts en resistencia"
+    else if f_neutral(b4) and f_bear(b1)
+        r := "4H plano, 1D bajista; sesgo corto suave"
+    else if f_neutral(b4) and f_bull(b1)
+        r := "4H plano, 1D alcista; sesgo largo suave"
+    r
+
+// PLAN: acción concreta
+f_plan(string sesgo, string lectura) =>
+    string r = "Operar ambos extremos con tamaño normal"
+    if lectura == "Rebote corto contra tendencia mayor"
+        r := "No perseguir long; esperar resistencia para short"
+    else if lectura == "Pullback corto dentro de tendencia mayor"
+        r := "Buscar soporte para long"
+    else if sesgo == "Preferir SHORT en resistencia"
+        r := "Vender resistencia; comprar soporte solo pequeño"
+    else if sesgo == "Preferir LONG en soporte"
+        r := "Comprar soporte; vender resistencia solo pequeño"
+    else if sesgo == "Evitar longs contra 4H"
+        r := "No perseguir long; esperar resistencia para short"
+    else if sesgo == "Evitar shorts contra 4H"
+        r := "No perseguir short; esperar soporte para long"
+    else if sesgo == "Solo extremos, riesgo reducido"
+        r := "Operar solo extremos claros con tamaño reducido"
+    else if sesgo == "Esperar mejor extremo"
+        r := "En medio del rango: esperar soporte o resistencia"
+    else if sesgo == "Rango equilibrado"
+        r := "Operar ambos extremos con tamaño normal"
+    r
+
+f_sesgoColor(string s) =>
+    color c = colNeutral
+    if str.contains(s, "Preferir LONG") or s == "Evitar shorts contra 4H"
+        c := colLong
+    else if str.contains(s, "Preferir SHORT") or s == "Evitar longs contra 4H"
+        c := colShort
+    else if str.contains(s, "Solo extremos")
+        c := colCaution
+    else if str.contains(s, "Esperar")
+        c := colWait
+    c
+
+// =====================================================================================
+//  HELPERS de presentación
+// =====================================================================================
+f_riskStr(float r) => str.tostring(r, "0.##") + "x"
+
+f_riskColor(float r) =>
+    color c = colNeutral
+    if r <= 0.0
+        c := colNeutral
+    else if r < 1.0
+        c := colCaution
+    else if r <= 1.0
+        c := colWait
+    else if r <= 1.5
+        c := color.new(colLong, 20)
+    else
+        c := colLong
+    c
+
+f_tfLabel(string tf) =>
+    string t = tf == "" ? timeframe.period : tf
+    string r = t
+    if t == "15"
+        r := "15m"
+    else if t == "30"
+        r := "30m"
+    else if t == "60"
+        r := "1H"
+    else if t == "120"
+        r := "2H"
+    else if t == "240"
+        r := "4H"
+    else if t == "D"
+        r := "1D"
+    else if t == "W"
+        r := "1W"
+    else if t == "M"
+        r := "1M"
+    r
+
+f_pos(string s) =>
+    s == "Top Right" ? position.top_right : s == "Top Left" ? position.top_left : s == "Bottom Right" ? position.bottom_right : s == "Bottom Left" ? position.bottom_left : position.middle_right
+
+f_txt(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Large" ? size.large : size.normal
+
+f_row(table p, int rw, string lTxt, string vTxt, color lc, color vc, color lbg, color vbg, string sz) =>
+    table.cell(p, 0, rw, lTxt, text_color = lc, bgcolor = lbg, text_size = sz, text_halign = text.align_left)
+    table.cell(p, 1, rw, vTxt, text_color = vc, bgcolor = vbg, text_size = sz, text_halign = text.align_left)
+
+// =====================================================================================
+//  CÁLCULOS GLOBALES
+// =====================================================================================
+// --- MTF (no repaint) ---------------------------------------------------------------
+simple int secOff = confirmHTF ? 1 : 0
+[b15,  a15,  k15,  r15 ] = request.security(syminfo.tickerid, tfFast,  f_trendPack(secOff), lookahead = barmerge.lookahead_off)
+[bOp,  aOp,  kOp,  rOp ] = request.security(syminfo.tickerid, tfOper,  f_trendPack(secOff), lookahead = barmerge.lookahead_off)
+[b4h,  a4h,  k4h,  r4h ] = request.security(syminfo.tickerid, tfHTF,   f_trendPack(secOff), lookahead = barmerge.lookahead_off)
+[b1d,  a1d,  k1d,  r1d ] = request.security(syminfo.tickerid, tfDaily, f_trendPack(secOff), lookahead = barmerge.lookahead_off)
+[bMac, aMac, kMac, rMac] = request.security(syminfo.tickerid, tfMacro, f_trendPack(secOff), lookahead = barmerge.lookahead_off)
+
+float wSum = w15 + wOp + wHtf + wDay + wMac
+float mtfBias = wSum > 0.0 ? (b15 * w15 + bOp * wOp + b4h * wHtf + b1d * wDay + bMac * wMac) / wSum : 0.0
+
+// --- Indicadores nativos del gráfico (para Debug) -----------------------------------
+float atrC  = ta.atr(atrLen)
+float emaFc = ta.ema(close, emaFastLen)
+float emaSc = ta.ema(close, emaSlowLen)
+[diPc, diMc, adxC] = ta.dmi(adxLen, adxLen)
+float kerC  = f_ker(close, kerLen)
+float rsiC  = ta.rsi(close, rsiLen)
+float tqi = math.min(adxC / 25.0, 1.0) * 0.35 + math.min(kerC, 1.0) * 0.35 + (math.abs(mtfBias) / 100.0) * 0.30
+
+// --- Rango manual (OPCIONAL, no bloquea) --------------------------------------------
+bool  rangeConfigured = useManualRange and manualResistance > manualSupport and manualResistance > 0.0
+float rangeSize = rangeConfigured ? manualResistance - manualSupport : na
+float buf = breakoutBufferATR * atrC
+float rangePos = rangeConfigured and rangeSize > 0.0 ? (close - manualSupport) / rangeSize * 100.0 : na
+
+string zone = "—"
+if rangeConfigured
+    if close > manualResistance + buf
+        zone := "RUPTURA ALCISTA"
+    else if close < manualSupport - buf
+        zone := "RUPTURA BAJISTA"
+    else if rangePos < supportZonePct
+        zone := "SOPORTE"
+    else if rangePos < middleLowPct
+        zone := "ZONA BAJA"
+    else if rangePos <= middleHighPct
+        zone := "MEDIO"
+    else if rangePos < resistanceZonePct
+        zone := "ZONA ALTA"
+    else
+        zone := "RESISTENCIA"
+
+string zoneNice = zone == "SOPORTE" ? "Soporte" : zone == "ZONA BAJA" ? "Zona baja" : zone == "MEDIO" ? "Medio del rango" : zone == "ZONA ALTA" ? "Zona alta" : zone == "RESISTENCIA" ? "Resistencia" : zone == "RUPTURA ALCISTA" ? "Ruptura alcista" : zone == "RUPTURA BAJISTA" ? "Ruptura bajista" : "—"
+string zoneKey  = zone == "SOPORTE" ? "support" : zone == "ZONA BAJA" ? "low" : zone == "MEDIO" ? "middle" : zone == "ZONA ALTA" ? "high" : zone == "RESISTENCIA" ? "resistance" : zone == "RUPTURA ALCISTA" ? "breakout_up" : zone == "RUPTURA BAJISTA" ? "breakout_down" : "none"
+string rangeStatus = not rangeConfigured ? "No configurado" : zoneNice + " · " + str.tostring(rangePos, "0") + "%"
+color  rangeStatusCol = not rangeConfigured ? colNeutral : zone == "SOPORTE" or zone == "ZONA BAJA" ? colLong : zone == "RESISTENCIA" or zone == "ZONA ALTA" ? colShort : zone == "MEDIO" ? colCaution : colWait
+
+// --- Sesgo / riesgo / lectura / plan ------------------------------------------------
+[sesgoBase, rLong, rShort] = f_biasDecision(b4h, b1d)
+string sesgo = sesgoBase
+if rangeConfigured and zone == "MEDIO"
+    sesgo := "Esperar mejor extremo"
+string reasonL = f_reasonLong(b4h, b1d)
+string reasonS = f_reasonShort(b4h, b1d)
+string riskLongStr  = f_riskStr(rLong) + " — " + reasonL
+string riskShortStr = f_riskStr(rShort) + " — " + reasonS
+string lectura = f_lectura(b4h, b1d, b15)
+string plan = f_plan(sesgo, lectura)
+
+color sesgoCol  = f_sesgoColor(sesgo)
+color rLongCol  = str.contains(reasonL, "a favor") ? colLong : str.contains(reasonL, "contra") ? colShort : colNeutral
+color rShortCol = str.contains(reasonS, "a favor") ? colLong : str.contains(reasonS, "contra") ? colShort : colNeutral
+color macroCol  = f_biasColor(bMac)
+string biasAggLabel = f_biasLabel(mtfBias)
+
+// =====================================================================================
+//  PANEL VISUAL
+// =====================================================================================
+string macroLbl = f_tfLabel(tfMacro)
+var table p = na
+if barstate.islast
+    int nRows = panelMode == "Simple" ? 12 : panelMode == "Compacto" ? 8 : 24
+    if na(p)
+        p := table.new(f_pos(panelPosition), 2, nRows, bgcolor = bgPanel, frame_color = bgFrame, frame_width = 1, border_color = bgFrame, border_width = 1)
+    string sz = f_txt(textSize)
+    f_row(p, 0, "QRCM Range Context V1.2", biasAggLabel, txtMain, f_biasColor(mtfBias), bgHeader, bgHeader, sz)
+    if panelMode == "Compacto"
+        f_row(p, 1, "RANGO MANUAL", rangeStatus, txtMuted, rangeStatusCol, bgHeader, bgPanel, sz)
+        f_row(p, 2, "SESGO RANGO", sesgo, txtMuted, sesgoCol, bgHeader, bgPanel, sz)
+        f_row(p, 3, "RIESGO LONG", riskLongStr, txtMuted, rLongCol, bgHeader, bgPanel, sz)
+        f_row(p, 4, "RIESGO SHORT", riskShortStr, txtMuted, rShortCol, bgHeader, bgPanel, sz)
+        f_row(p, 5, f_tfLabel(tfHTF), f_biasLabel(b4h), txtMuted, f_biasColor(b4h), bgHeader, bgPanel, sz)
+        f_row(p, 6, f_tfLabel(tfDaily), f_biasLabel(b1d), txtMuted, f_biasColor(b1d), bgHeader, bgPanel, sz)
+        f_row(p, 7, "LECTURA", lectura, txtMuted, colWait, bgHeader, bgPanel, sz)
+    else
+        f_row(p, 1, "RANGO MANUAL", rangeStatus, txtMuted, rangeStatusCol, bgHeader, bgPanel, sz)
+        f_row(p, 2, "SESGO RANGO", sesgo, txtMuted, sesgoCol, bgHeader, bgPanel, sz)
+        f_row(p, 3, "RIESGO LONG", riskLongStr, txtMuted, rLongCol, bgHeader, bgPanel, sz)
+        f_row(p, 4, "RIESGO SHORT", riskShortStr, txtMuted, rShortCol, bgHeader, bgPanel, sz)
+        f_row(p, 5, f_tfLabel(tfFast), f_biasLabel(b15), txtMuted, f_biasColor(b15), bgHeader, bgPanel, sz)
+        f_row(p, 6, f_tfLabel(tfOper), f_biasLabel(bOp), txtMuted, f_biasColor(bOp), bgHeader, bgPanel, sz)
+        f_row(p, 7, f_tfLabel(tfHTF), f_biasLabel(b4h), txtMuted, f_biasColor(b4h), bgHeader, bgPanel, sz)
+        f_row(p, 8, f_tfLabel(tfDaily), f_biasLabel(b1d), txtMuted, f_biasColor(b1d), bgHeader, bgPanel, sz)
+        f_row(p, 9, macroLbl, f_biasLabel(bMac), txtMuted, macroCol, bgHeader, bgPanel, sz)
+        f_row(p, 10, "LECTURA", lectura, txtMuted, colWait, bgHeader, bgPanel, sz)
+        f_row(p, 11, "PLAN", plan, txtMuted, txtMain, bgHeader, bgPanel, sz)
+        if panelMode == "Debug"
+            f_row(p, 12, "MTFBiasScore", str.tostring(mtfBias, "0"), txtMuted, colWait, bgHeader, bgPanel, sz)
+            f_row(p, 13, "15m score", str.tostring(b15, "0"), txtMuted, colWait, bgHeader, bgPanel, sz)
+            f_row(p, 14, "1H score", str.tostring(bOp, "0"), txtMuted, colWait, bgHeader, bgPanel, sz)
+            f_row(p, 15, "4H score", str.tostring(b4h, "0"), txtMuted, colWait, bgHeader, bgPanel, sz)
+            f_row(p, 16, "1D score", str.tostring(b1d, "0"), txtMuted, colWait, bgHeader, bgPanel, sz)
+            f_row(p, 17, "Macro score", str.tostring(bMac, "0"), txtMuted, colWait, bgHeader, bgPanel, sz)
+            f_row(p, 18, "ADX", str.tostring(adxC, "0.0"), txtMuted, colWait, bgHeader, bgPanel, sz)
+            f_row(p, 19, "KER", str.tostring(kerC, "0.00"), txtMuted, colWait, bgHeader, bgPanel, sz)
+            f_row(p, 20, "TQI", str.tostring(tqi, "0.00"), txtMuted, colWait, bgHeader, bgPanel, sz)
+            f_row(p, 21, "RSI", str.tostring(rsiC, "0.0"), txtMuted, colWait, bgHeader, bgPanel, sz)
+            f_row(p, 22, "Range Pos", rangeConfigured ? str.tostring(rangePos, "0.0") + "%" : "n/a", txtMuted, colWait, bgHeader, bgPanel, sz)
+            f_row(p, 23, "ATR", str.tostring(atrC, format.mintick), txtMuted, colWait, bgHeader, bgPanel, sz)
+
+// =====================================================================================
+//  DIBUJO DEL RANGO MANUAL (solo si configurado; sin spam de etiquetas)
+// =====================================================================================
+float supTop    = rangeConfigured ? manualSupport + rangeSize * supportZonePct / 100.0 : na
+float midLowLvl = rangeConfigured ? manualSupport + rangeSize * middleLowPct / 100.0 : na
+float midHighLvl= rangeConfigured ? manualSupport + rangeSize * middleHighPct / 100.0 : na
+float resBot    = rangeConfigured ? manualSupport + rangeSize * resistanceZonePct / 100.0 : na
+
+pSup = plot(showRangeLines and rangeConfigured ? manualSupport : na, "Soporte", color = colLong, linewidth = 2, style = plot.style_linebr)
+pRes = plot(showRangeLines and rangeConfigured ? manualResistance : na, "Resistencia", color = colShort, linewidth = 2, style = plot.style_linebr)
+zSupLo = plot(showRangeZones and rangeConfigured ? manualSupport : na,    "z_supLo", display = display.none)
+zSupHi = plot(showRangeZones and rangeConfigured ? supTop : na,           "z_supHi", display = display.none)
+zResLo = plot(showRangeZones and rangeConfigured ? resBot : na,           "z_resLo", display = display.none)
+zResHi = plot(showRangeZones and rangeConfigured ? manualResistance : na, "z_resHi", display = display.none)
+zMidLo = plot(showMiddleNoTradeZone and rangeConfigured ? midLowLvl : na, "z_midLo", display = display.none)
+zMidHi = plot(showMiddleNoTradeZone and rangeConfigured ? midHighLvl : na,"z_midHi", display = display.none)
+fill(zSupLo, zSupHi, color = color.new(colLong, 90), title = "Zona soporte")
+fill(zResLo, zResHi, color = color.new(colShort, 90), title = "Zona resistencia")
+fill(zMidLo, zMidHi, color = color.new(colNeutral, 85), title = "Zona media (no operar)")
+
+// =====================================================================================
+//  ALERTAS / EVENTOS ESTRUCTURADOS (JSON)
+// =====================================================================================
+f_json(string etype) =>
+    '{' + '"event_type":"' + etype + '",' + '"symbol":"' + syminfo.tickerid + '",' + '"timeframe":"' + timeframe.period + '",' + '"sesgo":"' + sesgo + '",' + '"risk_long":"' + f_riskStr(rLong) + '",' + '"risk_short":"' + f_riskStr(rShort) + '",' + '"b15":"' + f_biasKey(b15) + '",' + '"b1h":"' + f_biasKey(bOp) + '",' + '"b4h":"' + f_biasKey(b4h) + '",' + '"b1d":"' + f_biasKey(b1d) + '",' + '"bmacro":"' + f_biasKey(bMac) + '",' + '"mtf_bias":' + str.tostring(mtfBias, "0") + ',' + '"lectura":"' + lectura + '",' + '"plan":"' + plan + '",' + '"range_status":"' + (rangeConfigured ? "configured" : "not_configured") + '",' + '"zone":"' + zoneKey + '",' + '"support":' + (rangeConfigured ? str.tostring(manualSupport, format.mintick) : "null") + ',' + '"resistance":' + (rangeConfigured ? str.tostring(manualResistance, format.mintick) : "null") + ',' + '"range_position":' + (rangeConfigured ? str.tostring(rangePos, "0.0") : "null") + '}'
+
+var string prevSesgo = na
+var string prevRisk  = na
+var string prevRead  = na
+var string prevZone  = na
+string riskTag = f_riskStr(rLong) + "/" + f_riskStr(rShort)
+bool canAlert = enableAlerts and (alertOncePerBarClose ? barstate.isconfirmed : barstate.islast)
+if canAlert
+    if alertBias and not na(prevSesgo) and sesgo != prevSesgo
+        alert(f_json("qrcm.bias_changed"), alert.freq_once_per_bar)
+    if alertRisk and not na(prevRisk) and riskTag != prevRisk
+        alert(f_json("qrcm.risk_changed"), alert.freq_once_per_bar)
+    if alertReading and not na(prevRead) and lectura != prevRead
+        alert(f_json("qrcm.reading_changed"), alert.freq_once_per_bar)
+    if alertZone and rangeConfigured and not na(prevZone) and zoneKey != prevZone
+        alert(f_json("qrcm.zone_changed"), alert.freq_once_per_bar)
+    prevSesgo := sesgo
+    prevRisk  := riskTag
+    prevRead  := lectura
+    prevZone  := zoneKey
+
+// Alertcondition básica (mensaje con placeholders nativos)
+alertcondition(sesgo != sesgo[1], "QRCM cambio de sesgo", "QRCM Range Context: cambio de sesgo — {{ticker}} {{interval}}")
