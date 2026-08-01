@@ -55,8 +55,12 @@ slopeLen    = input.int(5,  "Slope len",  minval = 1, group = gMTF)
 slopeThresh = input.float(0.05, "Slope mínimo (ATR/barra)", minval = 0, step = 0.01, group = gMTF)
 pivLeftTrend  = input.int(3, "Estructura: pivote izq.", minval = 1, group = gMTF)
 pivRightTrend = input.int(3, "Estructura: pivote der.", minval = 1, group = gMTF)
-biasWeakThresh   = input.float(20, "Umbral débil",  minval = 1, group = gMTF)
-biasStrongThresh = input.float(50, "Umbral fuerte", minval = 1, group = gMTF)
+biasWeakThreshIn   = input.float(20, "Umbral débil",  minval = 1, group = gMTF)
+biasStrongThreshIn = input.float(50, "Umbral fuerte", minval = 1, group = gMTF)
+// Umbrales efectivos ordenados: el fuerte nunca puede quedar por debajo del débil aunque
+// el usuario los configure invertidos (evita que etiqueta/decisión se contradigan).
+float biasWeakThresh   = math.min(biasWeakThreshIn, biasStrongThreshIn)
+float biasStrongThresh = math.max(biasWeakThreshIn, biasStrongThreshIn)
 w15  = input.float(5,  "Peso 15m (agregado)", minval = 0, group = gMTF)
 wOp  = input.float(15, "Peso 1H (agregado)",  minval = 0, group = gMTF)
 wHtf = input.float(40, "Peso 4H (agregado)",  minval = 0, group = gMTF)
@@ -214,7 +218,12 @@ f_biasDecision(float b4, float b1) =>
     string sesgo = "Rango equilibrado"
     float rL = 1.0
     float rS = 1.0
-    if f_bear(b4) and f_bear(b1)
+    if na(b4) or na(b1)
+        // Warm-up: aún no hay 4H o 1D fiables -> no inventar sesgo ni riesgo
+        sesgo := "Contexto MTF no disponible"
+        rL := 0.0
+        rS := 0.0
+    else if f_bear(b4) and f_bear(b1)
         sesgo := "Preferir SHORT en resistencia"
         rS := (f_strongBear(b4) and f_strongBear(b1)) ? 2.0 : 1.5
         rL := (f_strongBear(b4) or f_strongBear(b1)) ? 0.25 : 0.5
@@ -279,7 +288,9 @@ f_reasonShort(float b4, float b1) =>
 // LECTURA: 4H domina, 15m = timing
 f_lectura(float b4, float b1, float b15) =>
     string r = "Contexto mixto; operar solo extremos"
-    if f_neutral(b4) and f_neutral(b1)
+    if na(b4) or na(b1)
+        r := "Datos MTF insuficientes (warm-up)"
+    else if f_neutral(b4) and f_neutral(b1)
         r := "Rango equilibrado sin tendencia dominante"
     else if f_bear(b4) and f_bull(b15)
         r := "Rebote corto contra tendencia mayor"
@@ -298,7 +309,9 @@ f_lectura(float b4, float b1, float b15) =>
 // PLAN: acción concreta
 f_plan(string sesgo, string lectura) =>
     string r = "Operar ambos extremos con tamaño normal"
-    if sesgo == "Esperar mejor extremo"
+    if sesgo == "Contexto MTF no disponible"
+        r := "Datos MTF insuficientes; esperar"
+    else if sesgo == "Esperar mejor extremo"
         r := "En medio del rango: esperar soporte o resistencia"
     else if lectura == "Rebote corto contra tendencia mayor"
         r := "No perseguir long; esperar resistencia para short"
@@ -459,7 +472,8 @@ color  rangeStatusCol = not rangeConfigured ? colNeutral : zone == "SOPORTE" or 
 // --- Sesgo / riesgo / lectura / plan ------------------------------------------------
 [sesgoBase, rLong, rShort] = f_biasDecision(b4h, b1d)
 string sesgo = sesgoBase
-if rangeConfigured and zone == "MEDIO"
+// El override de "medio del rango" no debe pisar el estado de warm-up (datos no disponibles).
+if sesgoBase != "Contexto MTF no disponible" and rangeConfigured and zone == "MEDIO"
     sesgo := "Esperar mejor extremo"
 string reasonL = f_reasonLong(b4h, b1d)
 string reasonS = f_reasonShort(b4h, b1d)
@@ -551,9 +565,11 @@ var string prevRead  = na
 var string prevZone  = na
 string riskTag = f_riskStr(rLong) + "/" + f_riskStr(rShort)
 bool canAlert = enableAlerts and (alertOncePerBarClose ? barstate.isconfirmed : barstate.islast)
-// Al cierre (isconfirmed, una vez por barra) usamos freq_all para que TODOS los eventos que
-// cambian en la misma barra se emitan; en modo intrabar, once_per_bar evita spam por tick.
-string alertFreq = alertOncePerBarClose ? alert.freq_all : alert.freq_once_per_bar
+// freq_all en ambos modos: la comparación con prev* ya impide duplicados (tras disparar se
+// actualiza prev*, así que el mismo evento no se repite por tick), y freq_all garantiza que
+// TODOS los tipos de evento que cambian en la misma ejecución se emitan (once_per_bar podía
+// suprimir los posteriores). Aplica igual al cierre y en modo intrabar.
+string alertFreq = alert.freq_all
 if canAlert
     if alertBias and not na(prevSesgo) and sesgo != prevSesgo
         alert(f_json("qrcm.bias_changed"), alertFreq)

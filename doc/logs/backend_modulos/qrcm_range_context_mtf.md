@@ -71,6 +71,16 @@ No sustituye a V1.0 ni V1.1 (los tres conviven en `indicators/`).
   `(biasWeakThresh + biasStrongThresh)/2` en vez de un 35 fijo, para no etiquetar "Alcista/Bajista"
   un score que `f_bull/f_biasKey` consideran neutral cuando `biasWeakThresh` > 35.
 
+### Revisión Codex — 4ª ronda (2026-08-01) — atendida (P1/P2) + 1 pendiente de decisión
+- P1 (warm-up con `b4h`/`b1d` na): `f_biasDecision` devuelve ahora "Contexto MTF no disponible"
+  con riesgo 0x/0x cuando 4H o 1D aún no son fiables (antes daba "Rango equilibrado 1x/1x" falso).
+  `f_lectura` y `f_plan` tienen rama de warm-up; el override de "medio" no pisa ese estado.
+- P2 (umbrales de bias): `biasWeakThresh`/`biasStrongThresh` se derivan de `min`/`max` de los
+  inputs, así el fuerte nunca queda por debajo del débil (etiqueta y decisión ya no se contradicen).
+- P2 (eventos intrabar): las alertas usan `alert.freq_all` en ambos modos; el guard `prev*` evita
+  duplicados por tick y garantiza que todos los tipos de evento que cambian se emitan.
+- P2 PENDIENTE (etiquetas 4H/1D con TF configurables): en decisión del usuario (ver más abajo).
+
 ### Pendiente / próximos pasos
 - Validar compilación y comportamiento en TradingView (BTC/ETH 1H, FX, activo de bajo volumen).
 - Posible V1.3: persistencia de niveles por símbolo, divergencias, ajuste de umbrales por activo.
