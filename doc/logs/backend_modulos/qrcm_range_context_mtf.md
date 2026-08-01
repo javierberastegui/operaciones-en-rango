@@ -60,6 +60,17 @@ No sustituye a V1.0 ni V1.1 (los tres conviven en `indicators/`).
   en la misma barra se emitan (antes el primer `alert()` podía suprimir a los siguientes). En modo
   intrabar se mantiene `freq_once_per_bar`.
 
+### Revisión Codex — 3ª ronda (2026-08-01) — atendida
+- P1 (agregado MTF con `na`): `mtfBias` se calcula ahora solo sobre los TF disponibles
+  (numerador y denominador ignoran los `na`); si ninguno está disponible -> `na`. El JSON serializa
+  `mtf_bias` como `null` cuando es `na`, la etiqueta del header muestra "n/a" y el TQI usa `nz`.
+  Evita que un TF `na` (p. ej. semanal en activo recién listado) contamine el agregado o emita `NaN`.
+- P2 (umbrales de zona): se saneaan/ordenan (`zSupPct <= zMidLoPct <= zMidHiPct <= zResPct`, 0..100)
+  antes de clasificar zonas y dibujar, para que inputs desordenados no dejen zonas inalcanzables.
+- P2 (etiqueta de bias): el corte intermedio de `f_biasLabel` se deriva de
+  `(biasWeakThresh + biasStrongThresh)/2` en vez de un 35 fijo, para no etiquetar "Alcista/Bajista"
+  un score que `f_bull/f_biasKey` consideran neutral cuando `biasWeakThresh` > 35.
+
 ### Pendiente / próximos pasos
 - Validar compilación y comportamiento en TradingView (BTC/ETH 1H, FX, activo de bajo volumen).
 - Posible V1.3: persistencia de niveles por símbolo, divergencias, ajuste de umbrales por activo.

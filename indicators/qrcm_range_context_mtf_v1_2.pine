@@ -163,16 +163,21 @@ f_strongBull(float s) => s >= biasStrongThresh
 f_strongBear(float s) => s <= -biasStrongThresh
 
 f_biasLabel(float s) =>
+    // El corte intermedio se deriva de los umbrales para no contradecir f_bull/f_biasKey
+    // cuando biasWeakThresh se configura por encima de 35.
+    float midThr = (biasWeakThresh + biasStrongThresh) / 2.0
     string r = "Rango / Neutral"
-    if s >= biasStrongThresh
+    if na(s)
+        r := "n/a"
+    else if s >= biasStrongThresh
         r := "Alcista fuerte"
-    else if s >= 35.0
+    else if s >= midThr
         r := "Alcista"
     else if s >= biasWeakThresh
         r := "Alcista débil"
     else if s <= -biasStrongThresh
         r := "Bajista fuerte"
-    else if s <= -35.0
+    else if s <= -midThr
         r := "Bajista"
     else if s <= -biasWeakThresh
         r := "Bajista débil"
@@ -400,8 +405,11 @@ simple int offMac  = confirmHTF and hMac  ? 1 : 0
 [b1d,  a1d,  k1d,  r1d ] = request.security(syminfo.tickerid, tfDaily, f_trendPack(offDay),  lookahead = confirmHTF and hDay  ? barmerge.lookahead_on : barmerge.lookahead_off)
 [bMac, aMac, kMac, rMac] = request.security(syminfo.tickerid, tfMacro, f_trendPack(offMac),  lookahead = confirmHTF and hMac  ? barmerge.lookahead_on : barmerge.lookahead_off)
 
-float wSum = w15 + wOp + wHtf + wDay + wMac
-float mtfBias = wSum > 0.0 ? (b15 * w15 + bOp * wOp + b4h * wHtf + b1d * wDay + bMac * wMac) / wSum : 0.0
+// Agregado ponderado SOLO sobre los TF disponibles (un TF na —p. ej. semanal en un activo
+// recién listado— no debe propagar na ni contar su peso). Si ninguno está disponible -> na.
+float mtfNum = (na(b15) ? 0.0 : b15 * w15) + (na(bOp) ? 0.0 : bOp * wOp) + (na(b4h) ? 0.0 : b4h * wHtf) + (na(b1d) ? 0.0 : b1d * wDay) + (na(bMac) ? 0.0 : bMac * wMac)
+float mtfDen = (na(b15) ? 0.0 : w15) + (na(bOp) ? 0.0 : wOp) + (na(b4h) ? 0.0 : wHtf) + (na(b1d) ? 0.0 : wDay) + (na(bMac) ? 0.0 : wMac)
+float mtfBias = mtfDen > 0.0 ? mtfNum / mtfDen : na
 
 // --- Indicadores nativos del gráfico (para Debug) -----------------------------------
 float atrC  = ta.atr(atrLen)
@@ -410,7 +418,7 @@ float emaSc = ta.ema(close, emaSlowLen)
 [diPc, diMc, adxC] = ta.dmi(adxLen, adxLen)
 float kerC  = f_ker(close, kerLen)
 float rsiC  = ta.rsi(close, rsiLen)
-float tqi = math.min(adxC / 25.0, 1.0) * 0.35 + math.min(kerC, 1.0) * 0.35 + (math.abs(mtfBias) / 100.0) * 0.30
+float tqi = math.min(adxC / 25.0, 1.0) * 0.35 + math.min(kerC, 1.0) * 0.35 + (math.abs(nz(mtfBias, 0.0)) / 100.0) * 0.30
 
 // --- Rango manual (OPCIONAL, no bloquea) --------------------------------------------
 bool  rangeConfigured = useManualRange and manualSupport > 0.0 and manualResistance > manualSupport
@@ -418,19 +426,27 @@ float rangeSize = rangeConfigured ? manualResistance - manualSupport : na
 float buf = breakoutBufferATR * atrC
 float rangePos = rangeConfigured and rangeSize > 0.0 ? (close - manualSupport) / rangeSize * 100.0 : na
 
+// Umbrales de zona saneados y ordenados (los inputs son independientes; forzamos
+// 0 <= soporte <= medio-bajo <= medio-alto <= resistencia <= 100 para no romper la
+// clasificación ni el dibujo si el usuario los configura desordenados).
+float zSupPct   = math.max(0.0, math.min(supportZonePct, 100.0))
+float zMidLoPct = math.max(zSupPct,   math.min(middleLowPct, 100.0))
+float zMidHiPct = math.max(zMidLoPct, math.min(middleHighPct, 100.0))
+float zResPct   = math.max(zMidHiPct, math.min(resistanceZonePct, 100.0))
+
 string zone = "—"
 if rangeConfigured
     if close > manualResistance + buf
         zone := "RUPTURA ALCISTA"
     else if close < manualSupport - buf
         zone := "RUPTURA BAJISTA"
-    else if rangePos < supportZonePct
+    else if rangePos < zSupPct
         zone := "SOPORTE"
-    else if rangePos < middleLowPct
+    else if rangePos < zMidLoPct
         zone := "ZONA BAJA"
-    else if rangePos <= middleHighPct
+    else if rangePos <= zMidHiPct
         zone := "MEDIO"
-    else if rangePos < resistanceZonePct
+    else if rangePos < zResPct
         zone := "ZONA ALTA"
     else
         zone := "RESISTENCIA"
@@ -506,10 +522,10 @@ if barstate.islast
 // =====================================================================================
 //  DIBUJO DEL RANGO MANUAL (solo si configurado; sin spam de etiquetas)
 // =====================================================================================
-float supTop    = rangeConfigured ? manualSupport + rangeSize * supportZonePct / 100.0 : na
-float midLowLvl = rangeConfigured ? manualSupport + rangeSize * middleLowPct / 100.0 : na
-float midHighLvl= rangeConfigured ? manualSupport + rangeSize * middleHighPct / 100.0 : na
-float resBot    = rangeConfigured ? manualSupport + rangeSize * resistanceZonePct / 100.0 : na
+float supTop    = rangeConfigured ? manualSupport + rangeSize * zSupPct / 100.0 : na
+float midLowLvl = rangeConfigured ? manualSupport + rangeSize * zMidLoPct / 100.0 : na
+float midHighLvl= rangeConfigured ? manualSupport + rangeSize * zMidHiPct / 100.0 : na
+float resBot    = rangeConfigured ? manualSupport + rangeSize * zResPct / 100.0 : na
 
 pSup = plot(showRangeLines and rangeConfigured ? manualSupport : na, "Soporte", color = colLong, linewidth = 2, style = plot.style_linebr)
 pRes = plot(showRangeLines and rangeConfigured ? manualResistance : na, "Resistencia", color = colShort, linewidth = 2, style = plot.style_linebr)
@@ -527,7 +543,7 @@ fill(zMidLo, zMidHi, color = color.new(colNeutral, 85), title = "Zona media (no 
 //  ALERTAS / EVENTOS ESTRUCTURADOS (JSON)
 // =====================================================================================
 f_json(string etype) =>
-    '{' + '"event_type":"' + etype + '",' + '"symbol":"' + syminfo.tickerid + '",' + '"timeframe":"' + timeframe.period + '",' + '"sesgo":"' + sesgo + '",' + '"risk_long":"' + f_riskStr(rLong) + '",' + '"risk_short":"' + f_riskStr(rShort) + '",' + '"b15":"' + f_biasKey(b15) + '",' + '"b1h":"' + f_biasKey(bOp) + '",' + '"b4h":"' + f_biasKey(b4h) + '",' + '"b1d":"' + f_biasKey(b1d) + '",' + '"bmacro":"' + f_biasKey(bMac) + '",' + '"mtf_bias":' + str.tostring(mtfBias, "0") + ',' + '"lectura":"' + lectura + '",' + '"plan":"' + plan + '",' + '"range_status":"' + (rangeConfigured ? "configured" : "not_configured") + '",' + '"zone":"' + zoneKey + '",' + '"support":' + (rangeConfigured ? str.tostring(manualSupport, format.mintick) : "null") + ',' + '"resistance":' + (rangeConfigured ? str.tostring(manualResistance, format.mintick) : "null") + ',' + '"range_position":' + (rangeConfigured ? str.tostring(rangePos, "0.0") : "null") + '}'
+    '{' + '"event_type":"' + etype + '",' + '"symbol":"' + syminfo.tickerid + '",' + '"timeframe":"' + timeframe.period + '",' + '"sesgo":"' + sesgo + '",' + '"risk_long":"' + f_riskStr(rLong) + '",' + '"risk_short":"' + f_riskStr(rShort) + '",' + '"b15":"' + f_biasKey(b15) + '",' + '"b1h":"' + f_biasKey(bOp) + '",' + '"b4h":"' + f_biasKey(b4h) + '",' + '"b1d":"' + f_biasKey(b1d) + '",' + '"bmacro":"' + f_biasKey(bMac) + '",' + '"mtf_bias":' + (na(mtfBias) ? "null" : str.tostring(mtfBias, "0")) + ',' + '"lectura":"' + lectura + '",' + '"plan":"' + plan + '",' + '"range_status":"' + (rangeConfigured ? "configured" : "not_configured") + '",' + '"zone":"' + zoneKey + '",' + '"support":' + (rangeConfigured ? str.tostring(manualSupport, format.mintick) : "null") + ',' + '"resistance":' + (rangeConfigured ? str.tostring(manualResistance, format.mintick) : "null") + ',' + '"range_position":' + (rangeConfigured ? str.tostring(rangePos, "0.0") : "null") + '}'
 
 var string prevSesgo = na
 var string prevRisk  = na
