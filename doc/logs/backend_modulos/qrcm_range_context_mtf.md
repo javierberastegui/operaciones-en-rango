@@ -51,6 +51,15 @@ No sustituye a V1.0 ni V1.1 (los tres conviven en `indicators/`).
 - P2 (rango manual): `rangeConfigured` exige ahora `manualSupport > 0` además de
   `manualResistance > manualSupport` (evita rango de base cero si solo se pone resistencia).
 
+### Revisión Codex — 2ª ronda (2026-08-01) — atendida
+- P1 (TF inferiores): el patrón `lookahead_on` + `[1]` solo se aplica ahora a TFs iguales o
+  superiores al del gráfico (comprobado con `timeframe.in_seconds`). Los TFs inferiores (p. ej.
+  15m en 1H) usan `lookahead_off` + `[0]`, evitando el repaint que provocaba `lookahead_on` en LTF.
+- P2 (frecuencia de alertas): al cierre (`alertOncePerBarClose`) se usa `alert.freq_all` en lugar de
+  `freq_once_per_bar`, protegido por `barstate.isconfirmed`, para que todos los eventos que cambian
+  en la misma barra se emitan (antes el primer `alert()` podía suprimir a los siguientes). En modo
+  intrabar se mantiene `freq_once_per_bar`.
+
 ### Pendiente / próximos pasos
 - Validar compilación y comportamiento en TradingView (BTC/ETH 1H, FX, activo de bajo volumen).
 - Posible V1.3: persistencia de niveles por símbolo, divergencias, ajuste de umbrales por activo.

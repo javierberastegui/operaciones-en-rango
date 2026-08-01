@@ -138,9 +138,12 @@ Se disparan al **cierre de vela** y solo en cambios de estado.
 
 ## 8. No repaint y limitaciones
 
-- No repaint: con `HTF sin repaint` (por defecto) se usa el patrón canónico
-  `lookahead_on` + offset `[1]`, es decir, el valor de la **barra HTF ya cerrada**, estable e
-  igual en historial y tiempo real (el `[1]` garantiza que no mira al futuro). Si lo desactivas,
-  se usa `lookahead_off` intrabar (más responsivo, puede repintar dentro de la barra). Sin `strategy.*`.
+- No repaint: con `HTF sin repaint` (por defecto), los TFs **iguales o superiores** al del gráfico
+  usan el patrón canónico `lookahead_on` + offset `[1]` (valor de la **barra ya cerrada**, estable e
+  igual en historial y tiempo real; el `[1]` garantiza que no mira al futuro). Los TFs **inferiores**
+  al gráfico (p. ej. 15m en un gráfico de 1H) usan siempre `lookahead_off` (ahí `lookahead_on`
+  repintaría). Si desactivas la opción, todos usan `lookahead_off` intrabar. Sin `strategy.*`.
+- Las alertas al cierre usan `alert.freq_all` (protegidas por `barstate.isconfirmed`, una vez por
+  barra), de modo que si varios estados cambian en la misma barra se emiten **todos** los eventos.
 - No predice el mercado ni sustituye tu gestión de riesgo. El macro (1W/1M) es informativo.
 - El sesgo se basa en 4H+1D; el 15m solo afina la lectura/timing.

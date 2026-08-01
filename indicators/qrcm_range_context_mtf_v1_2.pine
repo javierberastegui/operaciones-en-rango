@@ -45,7 +45,7 @@ tfOper      = input.timeframe("60", "TF operativo",  group = gMTF)
 tfHTF       = input.timeframe("240", "TF principal (sesgo)", group = gMTF)
 tfDaily     = input.timeframe("D",   "TF confirmación", group = gMTF)
 tfMacro     = input.timeframe("W",   "TF macro (1W/1M)", group = gMTF)
-confirmHTF  = input.bool(true, "HTF sin repaint (barra cerrada)", group = gMTF, tooltip = "ON: lookahead_on + offset [1] (patrón anti-repaint canónico, valor confirmado estable). OFF: lookahead_off intrabar (más responsivo, puede repintar dentro de la barra).")
+confirmHTF  = input.bool(true, "HTF sin repaint (barra cerrada)", group = gMTF, tooltip = "ON: para TFs iguales o superiores al gráfico usa lookahead_on + offset [1] (anti-repaint canónico, valor confirmado estable). Los TFs inferiores al gráfico (p. ej. 15m en 1H) siempre usan lookahead_off. OFF: lookahead_off intrabar en todos (más responsivo, puede repintar dentro de la barra).")
 emaFastLen  = input.int(21, "EMA rápida", minval = 1, group = gMTF)
 emaSlowLen  = input.int(55, "EMA lenta",  minval = 1, group = gMTF)
 rsiLen      = input.int(14, "RSI len",    minval = 1, group = gMTF)
@@ -379,18 +379,26 @@ f_row(table p, int rw, string lTxt, string vTxt, color lc, color vc, color lbg, 
 //  CÁLCULOS GLOBALES
 // =====================================================================================
 // --- MTF (no repaint) ---------------------------------------------------------------
-// Patrón anti-repaint canónico:
-//   confirmHTF = true  -> lookahead_on + offset [1] (mismo valor confirmado durante todo
-//                          el periodo HTF, coherente en historial y tiempo real; el [1]
-//                          usa la barra HTF ya cerrada, así que NO mira al futuro).
-//   confirmHTF = false -> lookahead_off + offset [0] (valor intrabar responsivo, puede
-//                          repintar dentro de la barra, pero tampoco filtra futuro).
-simple int secOff = confirmHTF ? 1 : 0
-[b15,  a15,  k15,  r15 ] = request.security(syminfo.tickerid, tfFast,  f_trendPack(secOff), lookahead = confirmHTF ? barmerge.lookahead_on : barmerge.lookahead_off)
-[bOp,  aOp,  kOp,  rOp ] = request.security(syminfo.tickerid, tfOper,  f_trendPack(secOff), lookahead = confirmHTF ? barmerge.lookahead_on : barmerge.lookahead_off)
-[b4h,  a4h,  k4h,  r4h ] = request.security(syminfo.tickerid, tfHTF,   f_trendPack(secOff), lookahead = confirmHTF ? barmerge.lookahead_on : barmerge.lookahead_off)
-[b1d,  a1d,  k1d,  r1d ] = request.security(syminfo.tickerid, tfDaily, f_trendPack(secOff), lookahead = confirmHTF ? barmerge.lookahead_on : barmerge.lookahead_off)
-[bMac, aMac, kMac, rMac] = request.security(syminfo.tickerid, tfMacro, f_trendPack(secOff), lookahead = confirmHTF ? barmerge.lookahead_on : barmerge.lookahead_off)
+// El patrón anti-repaint lookahead_on + offset [1] SOLO es válido para TFs iguales o
+// superiores al del gráfico (usa la barra HTF ya cerrada, misma en historial y tiempo
+// real, sin mirar al futuro). Para TFs inferiores al gráfico (p. ej. 15m en un gráfico
+// de 1H) lookahead_on repintaría: ahí se usa lookahead_off + offset [0] (último intrabar).
+simple int chartSec = timeframe.in_seconds(timeframe.period)
+simple bool hFast = timeframe.in_seconds(tfFast)  >= chartSec
+simple bool hOper = timeframe.in_seconds(tfOper)  >= chartSec
+simple bool hHtf  = timeframe.in_seconds(tfHTF)   >= chartSec
+simple bool hDay  = timeframe.in_seconds(tfDaily) >= chartSec
+simple bool hMac  = timeframe.in_seconds(tfMacro) >= chartSec
+simple int offFast = confirmHTF and hFast ? 1 : 0
+simple int offOper = confirmHTF and hOper ? 1 : 0
+simple int offHtf  = confirmHTF and hHtf  ? 1 : 0
+simple int offDay  = confirmHTF and hDay  ? 1 : 0
+simple int offMac  = confirmHTF and hMac  ? 1 : 0
+[b15,  a15,  k15,  r15 ] = request.security(syminfo.tickerid, tfFast,  f_trendPack(offFast), lookahead = confirmHTF and hFast ? barmerge.lookahead_on : barmerge.lookahead_off)
+[bOp,  aOp,  kOp,  rOp ] = request.security(syminfo.tickerid, tfOper,  f_trendPack(offOper), lookahead = confirmHTF and hOper ? barmerge.lookahead_on : barmerge.lookahead_off)
+[b4h,  a4h,  k4h,  r4h ] = request.security(syminfo.tickerid, tfHTF,   f_trendPack(offHtf),  lookahead = confirmHTF and hHtf  ? barmerge.lookahead_on : barmerge.lookahead_off)
+[b1d,  a1d,  k1d,  r1d ] = request.security(syminfo.tickerid, tfDaily, f_trendPack(offDay),  lookahead = confirmHTF and hDay  ? barmerge.lookahead_on : barmerge.lookahead_off)
+[bMac, aMac, kMac, rMac] = request.security(syminfo.tickerid, tfMacro, f_trendPack(offMac),  lookahead = confirmHTF and hMac  ? barmerge.lookahead_on : barmerge.lookahead_off)
 
 float wSum = w15 + wOp + wHtf + wDay + wMac
 float mtfBias = wSum > 0.0 ? (b15 * w15 + bOp * wOp + b4h * wHtf + b1d * wDay + bMac * wMac) / wSum : 0.0
@@ -527,15 +535,18 @@ var string prevRead  = na
 var string prevZone  = na
 string riskTag = f_riskStr(rLong) + "/" + f_riskStr(rShort)
 bool canAlert = enableAlerts and (alertOncePerBarClose ? barstate.isconfirmed : barstate.islast)
+// Al cierre (isconfirmed, una vez por barra) usamos freq_all para que TODOS los eventos que
+// cambian en la misma barra se emitan; en modo intrabar, once_per_bar evita spam por tick.
+string alertFreq = alertOncePerBarClose ? alert.freq_all : alert.freq_once_per_bar
 if canAlert
     if alertBias and not na(prevSesgo) and sesgo != prevSesgo
-        alert(f_json("qrcm.bias_changed"), alert.freq_once_per_bar)
+        alert(f_json("qrcm.bias_changed"), alertFreq)
     if alertRisk and not na(prevRisk) and riskTag != prevRisk
-        alert(f_json("qrcm.risk_changed"), alert.freq_once_per_bar)
+        alert(f_json("qrcm.risk_changed"), alertFreq)
     if alertReading and not na(prevRead) and lectura != prevRead
-        alert(f_json("qrcm.reading_changed"), alert.freq_once_per_bar)
+        alert(f_json("qrcm.reading_changed"), alertFreq)
     if alertZone and rangeConfigured and not na(prevZone) and zoneKey != prevZone
-        alert(f_json("qrcm.zone_changed"), alert.freq_once_per_bar)
+        alert(f_json("qrcm.zone_changed"), alertFreq)
     prevSesgo := sesgo
     prevRisk  := riskTag
     prevRead  := lectura
