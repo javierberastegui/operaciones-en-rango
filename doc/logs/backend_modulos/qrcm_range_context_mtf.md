@@ -38,9 +38,18 @@ No sustituye a V1.0 ni V1.1 (los tres conviven en `indicators/`).
   qrcm.zone_changed.
 
 ### Decisiones técnicas
-- No repaint: request.security lookahead_off + barra HTF cerrada opcional, alertas al cierre.
+- No repaint: request.security con patrón canónico `lookahead_on` + offset `[1]` cuando
+  `confirmHTF` (por defecto); `lookahead_off` intrabar si se desactiva. Alertas al cierre.
 - Reutiliza el motor `f_trendPack` (EMAs, pendiente/ATR, estructura, ADX/DI, KER, RSI).
 - Sin `strategy.*`. JSON usa `null` para support/resistance/posición cuando no hay rango configurado.
+
+### Revisión Codex (2026-08-01) — atendida
+- P1 (lookahead): a petición del usuario, se cambió a `lookahead_on` + `[1]` (patrón canónico
+  anti-repaint) cuando `confirmHTF`; `lookahead_off` + `[0]` en modo responsivo. Sin fuga de futuro.
+- P2 (PLAN en medio del rango): `f_plan` ahora prioriza el override "Esperar mejor extremo"
+  antes que las lecturas de rebote/pullback, para no contradecir el SESGO en MEDIO.
+- P2 (rango manual): `rangeConfigured` exige ahora `manualSupport > 0` además de
+  `manualResistance > manualSupport` (evita rango de base cero si solo se pone resistencia).
 
 ### Pendiente / próximos pasos
 - Validar compilación y comportamiento en TradingView (BTC/ETH 1H, FX, activo de bajo volumen).

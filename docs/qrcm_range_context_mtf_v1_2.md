@@ -138,6 +138,9 @@ Se disparan al **cierre de vela** y solo en cambios de estado.
 
 ## 8. No repaint y limitaciones
 
-- `request.security` con `lookahead_off` (+ barra HTF cerrada). Sin `strategy.*`.
+- No repaint: con `HTF sin repaint` (por defecto) se usa el patrón canónico
+  `lookahead_on` + offset `[1]`, es decir, el valor de la **barra HTF ya cerrada**, estable e
+  igual en historial y tiempo real (el `[1]` garantiza que no mira al futuro). Si lo desactivas,
+  se usa `lookahead_off` intrabar (más responsivo, puede repintar dentro de la barra). Sin `strategy.*`.
 - No predice el mercado ni sustituye tu gestión de riesgo. El macro (1W/1M) es informativo.
 - El sesgo se basa en 4H+1D; el 15m solo afina la lectura/timing.

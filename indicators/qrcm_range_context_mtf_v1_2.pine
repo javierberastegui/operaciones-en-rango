@@ -11,7 +11,8 @@
 //    15m = timing (no cambia el sesgo) · 1W/1M = macro (no bloquea).
 //  - Tabla: SESGO RANGO / RIESGO LONG / RIESGO SHORT / 15m / 1H / 4H / 1D / 1W / LECTURA / PLAN.
 //  - Modos Simple (limpio) y Debug (métricas internas). Sin spam de etiquetas.
-//  - No repaint: request.security lookahead_off, alertas al cierre. Sin strategy.*
+//  - No repaint: request.security con barra HTF cerrada (lookahead_on + offset [1]),
+//    alertas al cierre. Sin strategy.*
 //  Indicador independiente: no sustituye a V1.0 ni V1.1.
 // =====================================================================================
 indicator("QRCM Range Context MTF V1.2", "QRCM Range Context V1.2", overlay = true, max_labels_count = 10, max_lines_count = 10)
@@ -44,7 +45,7 @@ tfOper      = input.timeframe("60", "TF operativo",  group = gMTF)
 tfHTF       = input.timeframe("240", "TF principal (sesgo)", group = gMTF)
 tfDaily     = input.timeframe("D",   "TF confirmación", group = gMTF)
 tfMacro     = input.timeframe("W",   "TF macro (1W/1M)", group = gMTF)
-confirmHTF  = input.bool(true, "HTF sin repaint (barra cerrada)", group = gMTF)
+confirmHTF  = input.bool(true, "HTF sin repaint (barra cerrada)", group = gMTF, tooltip = "ON: lookahead_on + offset [1] (patrón anti-repaint canónico, valor confirmado estable). OFF: lookahead_off intrabar (más responsivo, puede repintar dentro de la barra).")
 emaFastLen  = input.int(21, "EMA rápida", minval = 1, group = gMTF)
 emaSlowLen  = input.int(55, "EMA lenta",  minval = 1, group = gMTF)
 rsiLen      = input.int(14, "RSI len",    minval = 1, group = gMTF)
@@ -292,7 +293,9 @@ f_lectura(float b4, float b1, float b15) =>
 // PLAN: acción concreta
 f_plan(string sesgo, string lectura) =>
     string r = "Operar ambos extremos con tamaño normal"
-    if lectura == "Rebote corto contra tendencia mayor"
+    if sesgo == "Esperar mejor extremo"
+        r := "En medio del rango: esperar soporte o resistencia"
+    else if lectura == "Rebote corto contra tendencia mayor"
         r := "No perseguir long; esperar resistencia para short"
     else if lectura == "Pullback corto dentro de tendencia mayor"
         r := "Buscar soporte para long"
@@ -306,8 +309,6 @@ f_plan(string sesgo, string lectura) =>
         r := "No perseguir short; esperar soporte para long"
     else if sesgo == "Solo extremos, riesgo reducido"
         r := "Operar solo extremos claros con tamaño reducido"
-    else if sesgo == "Esperar mejor extremo"
-        r := "En medio del rango: esperar soporte o resistencia"
     else if sesgo == "Rango equilibrado"
         r := "Operar ambos extremos con tamaño normal"
     r
@@ -378,12 +379,18 @@ f_row(table p, int rw, string lTxt, string vTxt, color lc, color vc, color lbg, 
 //  CÁLCULOS GLOBALES
 // =====================================================================================
 // --- MTF (no repaint) ---------------------------------------------------------------
+// Patrón anti-repaint canónico:
+//   confirmHTF = true  -> lookahead_on + offset [1] (mismo valor confirmado durante todo
+//                          el periodo HTF, coherente en historial y tiempo real; el [1]
+//                          usa la barra HTF ya cerrada, así que NO mira al futuro).
+//   confirmHTF = false -> lookahead_off + offset [0] (valor intrabar responsivo, puede
+//                          repintar dentro de la barra, pero tampoco filtra futuro).
 simple int secOff = confirmHTF ? 1 : 0
-[b15,  a15,  k15,  r15 ] = request.security(syminfo.tickerid, tfFast,  f_trendPack(secOff), lookahead = barmerge.lookahead_off)
-[bOp,  aOp,  kOp,  rOp ] = request.security(syminfo.tickerid, tfOper,  f_trendPack(secOff), lookahead = barmerge.lookahead_off)
-[b4h,  a4h,  k4h,  r4h ] = request.security(syminfo.tickerid, tfHTF,   f_trendPack(secOff), lookahead = barmerge.lookahead_off)
-[b1d,  a1d,  k1d,  r1d ] = request.security(syminfo.tickerid, tfDaily, f_trendPack(secOff), lookahead = barmerge.lookahead_off)
-[bMac, aMac, kMac, rMac] = request.security(syminfo.tickerid, tfMacro, f_trendPack(secOff), lookahead = barmerge.lookahead_off)
+[b15,  a15,  k15,  r15 ] = request.security(syminfo.tickerid, tfFast,  f_trendPack(secOff), lookahead = confirmHTF ? barmerge.lookahead_on : barmerge.lookahead_off)
+[bOp,  aOp,  kOp,  rOp ] = request.security(syminfo.tickerid, tfOper,  f_trendPack(secOff), lookahead = confirmHTF ? barmerge.lookahead_on : barmerge.lookahead_off)
+[b4h,  a4h,  k4h,  r4h ] = request.security(syminfo.tickerid, tfHTF,   f_trendPack(secOff), lookahead = confirmHTF ? barmerge.lookahead_on : barmerge.lookahead_off)
+[b1d,  a1d,  k1d,  r1d ] = request.security(syminfo.tickerid, tfDaily, f_trendPack(secOff), lookahead = confirmHTF ? barmerge.lookahead_on : barmerge.lookahead_off)
+[bMac, aMac, kMac, rMac] = request.security(syminfo.tickerid, tfMacro, f_trendPack(secOff), lookahead = confirmHTF ? barmerge.lookahead_on : barmerge.lookahead_off)
 
 float wSum = w15 + wOp + wHtf + wDay + wMac
 float mtfBias = wSum > 0.0 ? (b15 * w15 + bOp * wOp + b4h * wHtf + b1d * wDay + bMac * wMac) / wSum : 0.0
@@ -398,7 +405,7 @@ float rsiC  = ta.rsi(close, rsiLen)
 float tqi = math.min(adxC / 25.0, 1.0) * 0.35 + math.min(kerC, 1.0) * 0.35 + (math.abs(mtfBias) / 100.0) * 0.30
 
 // --- Rango manual (OPCIONAL, no bloquea) --------------------------------------------
-bool  rangeConfigured = useManualRange and manualResistance > manualSupport and manualResistance > 0.0
+bool  rangeConfigured = useManualRange and manualSupport > 0.0 and manualResistance > manualSupport
 float rangeSize = rangeConfigured ? manualResistance - manualSupport : na
 float buf = breakoutBufferATR * atrC
 float rangePos = rangeConfigured and rangeSize > 0.0 ? (close - manualSupport) / rangeSize * 100.0 : na
