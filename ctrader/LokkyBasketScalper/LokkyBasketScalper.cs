@@ -5,9 +5,9 @@ using cAlgo.API;
 namespace cAlgo.Robots
 {
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.None)]
-    public class LokkyBasketScalper : Robot
+    public class LokkyBasketScalperV2 : Robot
     {
-        [Parameter("Bot label", DefaultValue = "LokkyBasketScalper", Group = "General")]
+        [Parameter("Bot label", DefaultValue = "LokkyBasketScalperV2", Group = "General")]
         public string BotLabel { get; set; }
 
         [Parameter("Start direction", DefaultValue = TradeType.Buy, Group = "General")]
@@ -16,22 +16,31 @@ namespace cAlgo.Robots
         [Parameter("Alternate BUY/SELL", DefaultValue = true, Group = "General")]
         public bool AlternateDirection { get; set; }
 
-        [Parameter("Orders per basket", DefaultValue = 3, MinValue = 1, MaxValue = 20, Group = "Orders")]
-        public int OrdersPerBasket { get; set; }
+        [Parameter("Maximum cycles (0 = unlimited)", DefaultValue = 0, MinValue = 0, MaxValue = 1000000, Group = "General")]
+        public int MaximumCycles { get; set; }
+
+        [Parameter("Max orders per basket", DefaultValue = 10, MinValue = 1, MaxValue = 20, Group = "Orders")]
+        public int MaxOrdersPerBasket { get; set; }
 
         [Parameter("Lots per order", DefaultValue = 0.01, MinValue = 0.01, Group = "Orders")]
         public double LotsPerOrder { get; set; }
 
-        [Parameter("Cooldown seconds", DefaultValue = 1, MinValue = 0, MaxValue = 300, Group = "Orders")]
+        [Parameter("Cooldown seconds", DefaultValue = 10, MinValue = 0, MaxValue = 3600, Group = "Orders")]
         public int CooldownSeconds { get; set; }
 
-        [Parameter("Loss cooldown seconds", DefaultValue = 5, MinValue = 0, MaxValue = 3600, Group = "Orders")]
+        [Parameter("Loss cooldown seconds", DefaultValue = 30, MinValue = 0, MaxValue = 3600, Group = "Orders")]
         public int LossCooldownSeconds { get; set; }
 
-        [Parameter("Basket profit % balance", DefaultValue = 0.10, MinValue = 0.01, MaxValue = 10.0, Group = "Basket")]
+        [Parameter("Price spacing", DefaultValue = 0.25, MinValue = 0.01, Group = "Staggering")]
+        public double PriceSpacing { get; set; }
+
+        [Parameter("Min seconds between entries", DefaultValue = 1.0, MinValue = 0.0, MaxValue = 300.0, Group = "Staggering")]
+        public double MinSecondsBetweenEntries { get; set; }
+
+        [Parameter("Basket profit % balance", DefaultValue = 0.08, MinValue = 0.01, MaxValue = 10.0, Group = "Basket")]
         public double BasketProfitPercent { get; set; }
 
-        [Parameter("Basket loss % balance", DefaultValue = 0.50, MinValue = 0.05, MaxValue = 50.0, Group = "Basket")]
+        [Parameter("Basket loss % balance", DefaultValue = 0.25, MinValue = 0.05, MaxValue = 50.0, Group = "Basket")]
         public double BasketLossPercent { get; set; }
 
         [Parameter("Hard drawdown %", DefaultValue = 3.0, MinValue = 0.1, MaxValue = 90.0, Group = "Safety")]
@@ -52,17 +61,17 @@ namespace cAlgo.Robots
         [Parameter("Maximum lots/order", DefaultValue = 1.0, MinValue = 0.01, MaxValue = 100.0, Group = "Compounding")]
         public double MaximumLotsPerOrder { get; set; }
 
-        [Parameter("Maximum cycles (0 = unlimited)", DefaultValue = 0, MinValue = 0, MaxValue = 1000000, Group = "General")]
-        public int MaximumCycles { get; set; }
-
         private string _label;
         private TradeType _direction;
         private DateTime _nextCycleTime;
+        private DateTime _nextEntryTime;
         private double _startBalance;
         private double _startEquity;
         private double _cycleStartBalance;
         private double _basketTargetMoney;
         private double _basketLossMoney;
+        private double _lastEntryPrice;
+        private int _ordersOpenedThisCycle;
         private int _cycles;
         private bool _isClosing;
         private bool _hardLocked;
@@ -74,12 +83,13 @@ namespace cAlgo.Robots
             _startBalance = Account.Balance;
             _startEquity = Account.Equity;
             _nextCycleTime = Server.Time;
+            _nextEntryTime = Server.Time;
 
-            Print("=== LOKKY BASKET SCALPER STARTED ===");
+            Print("=== LOKKY BASKET SCALPER V2 STARTED ===");
             Print("Symbol: {0} | Balance: {1:F2} | Equity: {2:F2}", SymbolName, Account.Balance, Account.Equity);
-            Print("Immediate mode: first basket is opened as soon as the cBot starts.");
+            Print("First order opens immediately. Extra orders are added only after a favorable price move and the minimum time spacing.");
 
-            OpenBasket("startup");
+            StartNewCycle("startup");
         }
 
         protected override void OnTick()
@@ -111,7 +121,7 @@ namespace cAlgo.Robots
                 }
 
                 if (Server.Time >= _nextCycleTime)
-                    OpenBasket("next cycle");
+                    StartNewCycle("next cycle");
 
                 return;
             }
@@ -129,7 +139,10 @@ namespace cAlgo.Robots
             {
                 Print("Basket loss limit reached: {0:F2} <= -{1:F2}", basketNetProfit, _basketLossMoney);
                 CloseBasket(true);
+                return;
             }
+
+            TryAddOrder();
         }
 
         protected override void OnStop()
@@ -137,10 +150,10 @@ namespace cAlgo.Robots
             if (ClosePositionsOnStop)
                 CloseAllBotPositions();
 
-            Print("Lokky Basket Scalper stopped.");
+            Print("Lokky Basket Scalper V2 stopped.");
         }
 
-        private void OpenBasket(string reason)
+        private void StartNewCycle(string reason)
         {
             if (_hardLocked || _isClosing)
                 return;
@@ -148,6 +161,56 @@ namespace cAlgo.Robots
             if (GetBotPositions().Length > 0)
                 return;
 
+            _cycleStartBalance = Account.Balance;
+            _basketTargetMoney = Math.Max(0.01, _cycleStartBalance * BasketProfitPercent / 100.0);
+            _basketLossMoney = Math.Max(0.01, _cycleStartBalance * BasketLossPercent / 100.0);
+            _ordersOpenedThisCycle = 0;
+            _lastEntryPrice = 0;
+            _nextEntryTime = Server.Time;
+
+            var opened = OpenOneOrder(true);
+
+            if (opened)
+            {
+                _cycles++;
+                Print("Cycle {0} START | {1} | Max orders: {2} | Lots/order: {3:F2} | Price spacing: {4:F2} | Min entry delay: {5:F2}s | Target: {6:F2} | Loss limit: {7:F2} | Reason: {8}",
+                    _cycles, _direction, MaxOrdersPerBasket, CalculateLotsPerOrder(), PriceSpacing, MinSecondsBetweenEntries,
+                    _basketTargetMoney, _basketLossMoney, reason);
+            }
+            else
+            {
+                Print("First order could not be opened. Retrying cycle in 10 seconds.");
+                _nextCycleTime = Server.Time.AddSeconds(10);
+            }
+        }
+
+        private void TryAddOrder()
+        {
+            if (_isClosing || _ordersOpenedThisCycle <= 0)
+                return;
+
+            if (_ordersOpenedThisCycle >= MaxOrdersPerBasket)
+                return;
+
+            if (Server.Time < _nextEntryTime)
+                return;
+
+            if (_lastEntryPrice <= 0)
+                return;
+
+            var currentEntryPrice = _direction == TradeType.Buy ? Symbol.Ask : Symbol.Bid;
+            var favorableMove = _direction == TradeType.Buy
+                ? currentEntryPrice - _lastEntryPrice
+                : _lastEntryPrice - currentEntryPrice;
+
+            if (favorableMove < PriceSpacing)
+                return;
+
+            OpenOneOrder(false);
+        }
+
+        private bool OpenOneOrder(bool firstOrder)
+        {
             var lots = CalculateLotsPerOrder();
             var rawVolume = Symbol.QuantityToVolumeInUnits(lots);
             var volume = Symbol.NormalizeVolumeInUnits(rawVolume, RoundingMode.Down);
@@ -157,37 +220,26 @@ namespace cAlgo.Robots
             if (volume > Symbol.VolumeInUnitsMax)
                 volume = Symbol.VolumeInUnitsMax;
 
-            _cycleStartBalance = Account.Balance;
-            _basketTargetMoney = Math.Max(0.01, _cycleStartBalance * BasketProfitPercent / 100.0);
-            _basketLossMoney = Math.Max(0.01, _cycleStartBalance * BasketLossPercent / 100.0);
+            var result = ExecuteMarketOrder(_direction, SymbolName, volume, _label);
 
-            var opened = 0;
-
-            for (var i = 0; i < OrdersPerBasket; i++)
+            if (!result.IsSuccessful)
             {
-                var result = ExecuteMarketOrder(_direction, SymbolName, volume, _label);
-
-                if (result.IsSuccessful)
-                {
-                    opened++;
-                }
-                else
-                {
-                    Print("Order {0}/{1} failed: {2}", i + 1, OrdersPerBasket, result.Error);
-                }
+                Print("Order failed: {0}", result.Error);
+                _nextEntryTime = Server.Time.AddSeconds(Math.Max(1.0, MinSecondsBetweenEntries));
+                return false;
             }
 
-            if (opened > 0)
-            {
-                _cycles++;
-                Print("Cycle {0} OPEN | {1} | Orders: {2}/{3} | Lots/order: {4:F2} | Target: {5:F2} | Loss limit: {6:F2} | Reason: {7}",
-                    _cycles, _direction, opened, OrdersPerBasket, lots, _basketTargetMoney, _basketLossMoney, reason);
-            }
-            else
-            {
-                Print("No orders could be opened. Retrying in 10 seconds.");
-                _nextCycleTime = Server.Time.AddSeconds(10);
-            }
+            _ordersOpenedThisCycle++;
+            _lastEntryPrice = result.Position != null
+                ? result.Position.EntryPrice
+                : (_direction == TradeType.Buy ? Symbol.Ask : Symbol.Bid);
+            _nextEntryTime = Server.Time.AddSeconds(MinSecondsBetweenEntries);
+
+            Print("Order {0}/{1} OPEN | {2} | Lots: {3:F2} | Entry: {4:F2} | {5}",
+                _ordersOpenedThisCycle, MaxOrdersPerBasket, _direction, lots, _lastEntryPrice,
+                firstOrder ? "FIRST" : "PYRAMID ADD");
+
+            return true;
         }
 
         private void CloseBasket(bool wasLoss)
@@ -203,6 +255,8 @@ namespace cAlgo.Robots
 
             var delay = wasLoss ? Math.Max(CooldownSeconds, LossCooldownSeconds) : CooldownSeconds;
             _nextCycleTime = Server.Time.AddSeconds(delay);
+            _ordersOpenedThisCycle = 0;
+            _lastEntryPrice = 0;
 
             Print("Basket CLOSED | Result: {0} | Next direction: {1} | Next cycle in {2}s",
                 wasLoss ? "LOSS" : "PROFIT", _direction, delay);
