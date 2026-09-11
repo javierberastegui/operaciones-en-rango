@@ -1,0 +1,37 @@
+name: Build Lokky Basket Scalper
+
+on:
+  push:
+    branches:
+      - build/ctrader-basket-scalper
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore .\ctrader\LokkyBasketScalper\LokkyBasketScalper.csproj
+
+      - name: Build .algo
+        run: dotnet build .\ctrader\LokkyBasketScalper\LokkyBasketScalper.csproj --configuration Release -p:AlgoPublish=false -p:IncludeSource=True
+
+      - name: Show generated algo
+        shell: pwsh
+        run: Get-ChildItem -Path . -Recurse -Filter *.algo | Select-Object FullName,Length
+
+      - name: Upload .algo
+        uses: actions/upload-artifact@v4
+        with:
+          name: LokkyBasketScalper-algo
+          path: '**/*.algo'
+          if-no-files-found: error
