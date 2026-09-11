@@ -1,9 +1,9 @@
-name: Build Lokky Basket Scalper V4
+name: Build Lokky Basket Scalper V5
 
 on:
   push:
     branches:
-      - build/ctrader-basket-scalper-v4
+      - build/ctrader-basket-scalper-v5
   workflow_dispatch:
 
 jobs:
@@ -30,12 +30,12 @@ jobs:
         run: |
           $algo = Get-ChildItem -Path . -Recurse -Filter *.algo | Select-Object -First 1
           if (-not $algo) { throw 'No .algo file generated' }
-          Copy-Item $algo.FullName .\LokkyBasketScalperV4.algo
-          Get-Item .\LokkyBasketScalperV4.algo | Select-Object FullName,Length
+          Copy-Item $algo.FullName .\LokkyBasketScalperV5.algo
+          Get-Item .\LokkyBasketScalperV5.algo | Select-Object FullName,Length
 
       - name: Upload .algo
         uses: actions/upload-artifact@v4
         with:
-          name: LokkyBasketScalperV4-algo
-          path: 'LokkyBasketScalperV4.algo'
+          name: LokkyBasketScalperV5-algo
+          path: 'LokkyBasketScalperV5.algo'
           if-no-files-found: error
