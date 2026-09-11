@@ -6,7 +6,7 @@
     <AlgoBuild>true</AlgoBuild>
     <AlgoPublish>false</AlgoPublish>
     <IncludeSource>true</IncludeSource>
-    <AlgoName>LokkyBasketScalper</AlgoName>
+    <AlgoName>LokkyBasketScalperV2</AlgoName>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="cTrader.Automate" Version="1.0.20" />
