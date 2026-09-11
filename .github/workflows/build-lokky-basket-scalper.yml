@@ -1,9 +1,9 @@
-name: Build Lokky Basket Scalper
+name: Build Lokky Basket Scalper V2
 
 on:
   push:
     branches:
-      - build/ctrader-basket-scalper
+      - build/ctrader-basket-scalper-v2
   workflow_dispatch:
 
 jobs:
@@ -25,13 +25,17 @@ jobs:
       - name: Build .algo
         run: dotnet build .\ctrader\LokkyBasketScalper\LokkyBasketScalper.csproj --configuration Release -p:AlgoPublish=false -p:IncludeSource=True
 
-      - name: Show generated algo
+      - name: Rename generated package
         shell: pwsh
-        run: Get-ChildItem -Path . -Recurse -Filter *.algo | Select-Object FullName,Length
+        run: |
+          $algo = Get-ChildItem -Path . -Recurse -Filter *.algo | Select-Object -First 1
+          if (-not $algo) { throw 'No .algo file generated' }
+          Copy-Item $algo.FullName .\LokkyBasketScalperV2.algo
+          Get-Item .\LokkyBasketScalperV2.algo | Select-Object FullName,Length
 
       - name: Upload .algo
         uses: actions/upload-artifact@v4
         with:
-          name: LokkyBasketScalper-algo
-          path: '**/*.algo'
+          name: LokkyBasketScalperV2-algo
+          path: 'LokkyBasketScalperV2.algo'
           if-no-files-found: error
