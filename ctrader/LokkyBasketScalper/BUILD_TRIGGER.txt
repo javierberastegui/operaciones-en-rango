@@ -1,1 +1,1 @@
-Build trigger for LokkyBasketScalperV2.algo
+Build trigger for LokkyBasketScalperV4.algo
