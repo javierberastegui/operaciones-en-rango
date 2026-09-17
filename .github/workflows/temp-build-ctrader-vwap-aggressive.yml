@@ -25,20 +25,44 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Build aggressive cTrader .algo
+        id: build_algo
+        continue-on-error: true
         working-directory: .tmp-ctrader-builder
         run: |
-          dotnet restore FTMO_VWAP_MeanReversion_Aggressive_v1.csproj
-          dotnet build FTMO_VWAP_MeanReversion_Aggressive_v1.csproj -c Release --no-restore -warnaserror
+          set -o pipefail
+          : > aggressive-build.log
+          dotnet restore FTMO_VWAP_MeanReversion_Aggressive_v1.csproj 2>&1 | tee -a aggressive-build.log
+          RESTORE_STATUS=${PIPESTATUS[0]}
+          if [ "$RESTORE_STATUS" -ne 0 ]; then
+            exit "$RESTORE_STATUS"
+          fi
+          dotnet build FTMO_VWAP_MeanReversion_Aggressive_v1.csproj -c Release --no-restore -warnaserror 2>&1 | tee -a aggressive-build.log
+          BUILD_STATUS=${PIPESTATUS[0]}
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            exit "$BUILD_STATUS"
+          fi
           ALGO_PATH="$(find ./bin -type f -name '*.algo' | head -n 1)"
           if [ -z "$ALGO_PATH" ]; then
-            echo 'No aggressive .algo generated' >&2
-            find ./bin -maxdepth 5 -type f -print || true
+            echo 'No aggressive .algo generated' | tee -a aggressive-build.log
+            find ./bin -maxdepth 5 -type f -print 2>&1 | tee -a aggressive-build.log || true
             exit 1
           fi
           cp "$ALGO_PATH" ./FTMO_VWAP_MeanReversion_Aggressive_v1.algo
           test -s ./FTMO_VWAP_MeanReversion_Aggressive_v1.algo
-          echo "Generated from $ALGO_PATH"
-          sha256sum ./FTMO_VWAP_MeanReversion_Aggressive_v1.algo
+          echo "Generated from $ALGO_PATH" | tee -a aggressive-build.log
+          sha256sum ./FTMO_VWAP_MeanReversion_Aggressive_v1.algo | tee -a aggressive-build.log
+
+      - name: Upload build diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aggressive-vwap-build-log
+          path: .tmp-ctrader-builder/aggressive-build.log
+          if-no-files-found: warn
+
+      - name: Fail if build failed
+        if: steps.build_algo.outcome != 'success'
+        run: exit 1
 
       - name: Upload aggressive .algo
         uses: actions/upload-artifact@v4
