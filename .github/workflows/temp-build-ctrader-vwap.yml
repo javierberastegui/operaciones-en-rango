@@ -27,7 +27,7 @@ jobs:
         run: |
           dotnet restore FTMO_VWAP_MeanReversion_v1.csproj
           dotnet build FTMO_VWAP_MeanReversion_v1.csproj -c Release --no-restore -warnaserror
-          ALGO_PATH="$(find ./bin -type f -name 'FTMO_VWAP_MeanReversion_v1.algo' | head -n 1)"
+          ALGO_PATH="$(find ./bin -type f -name '*.algo' | head -n 1)"
           if [ -z "$ALGO_PATH" ]; then
             echo 'No .algo generated' >&2
             find ./bin -maxdepth 5 -type f -print || true
@@ -35,6 +35,7 @@ jobs:
           fi
           cp "$ALGO_PATH" ./FTMO_VWAP_MeanReversion_v1.algo
           test -s ./FTMO_VWAP_MeanReversion_v1.algo
+          echo "Generated from $ALGO_PATH"
           sha256sum ./FTMO_VWAP_MeanReversion_v1.algo
 
       - name: Upload .algo
