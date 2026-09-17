@@ -8,14 +8,16 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout temporary builder branch
         uses: actions/checkout@v4
+        with:
+          ref: build/ctrader-vwap-temp
 
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
@@ -44,3 +46,15 @@ jobs:
           name: FTMO_VWAP_MeanReversion_v1-algo
           path: .tmp-ctrader-builder/FTMO_VWAP_MeanReversion_v1.algo
           if-no-files-found: error
+
+      - name: Commit compiled binary to temporary branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f .tmp-ctrader-builder/FTMO_VWAP_MeanReversion_v1.algo
+          if git diff --cached --quiet; then
+            echo 'Binary already committed.'
+            exit 0
+          fi
+          git commit -m 'build: stage compiled VWAP .algo [skip ci]'
+          git push origin HEAD:build/ctrader-vwap-temp
