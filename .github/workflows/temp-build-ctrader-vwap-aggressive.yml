@@ -1,0 +1,60 @@
+name: Temporary cTrader VWAP aggressive build
+
+on:
+  pull_request:
+    paths:
+      - '.tmp-ctrader-builder/**'
+      - '.github/workflows/temp-build-ctrader-vwap-aggressive.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout temporary builder branch
+        uses: actions/checkout@v4
+        with:
+          ref: build/ctrader-vwap-temp
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build aggressive cTrader .algo
+        working-directory: .tmp-ctrader-builder
+        run: |
+          dotnet restore FTMO_VWAP_MeanReversion_Aggressive_v1.csproj
+          dotnet build FTMO_VWAP_MeanReversion_Aggressive_v1.csproj -c Release --no-restore -warnaserror
+          ALGO_PATH="$(find ./bin -type f -name 'FTMO_VWAP_MeanReversion_Aggressive_v1.algo' | head -n 1)"
+          if [ -z "$ALGO_PATH" ]; then
+            echo 'No aggressive .algo generated' >&2
+            find ./bin -maxdepth 5 -type f -print || true
+            exit 1
+          fi
+          cp "$ALGO_PATH" ./FTMO_VWAP_MeanReversion_Aggressive_v1.algo
+          test -s ./FTMO_VWAP_MeanReversion_Aggressive_v1.algo
+          echo "Generated from $ALGO_PATH"
+          sha256sum ./FTMO_VWAP_MeanReversion_Aggressive_v1.algo
+
+      - name: Upload aggressive .algo
+        uses: actions/upload-artifact@v4
+        with:
+          name: FTMO_VWAP_MeanReversion_Aggressive_v1-algo
+          path: .tmp-ctrader-builder/FTMO_VWAP_MeanReversion_Aggressive_v1.algo
+          if-no-files-found: error
+
+      - name: Commit compiled binary to temporary branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f .tmp-ctrader-builder/FTMO_VWAP_MeanReversion_Aggressive_v1.algo
+          if git diff --cached --quiet; then
+            echo 'Binary already committed.'
+            exit 0
+          fi
+          git commit -m 'build: stage compiled aggressive VWAP .algo [skip ci]'
+          git push origin HEAD:build/ctrader-vwap-temp
