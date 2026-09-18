@@ -19,7 +19,7 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: "6.0.x"
 
       - name: Reconstruct project
         shell: bash
@@ -30,6 +30,8 @@ jobs:
           unzip -q /tmp/EURUSDScalperV11-project.zip -d /tmp/ctrader-v11
           test -s /tmp/ctrader-v11/EURUSDScalperV11/EURUSDScalperV11.cs
           test -s /tmp/ctrader-v11/EURUSDScalperV11/EURUSDScalperV11.csproj
+          sed -i 's#<TargetFramework>net8.0</TargetFramework>#<TargetFramework>net6.0</TargetFramework>#'             /tmp/ctrader-v11/EURUSDScalperV11/EURUSDScalperV11.csproj
+          grep -n "TargetFramework\|PackageReference" /tmp/ctrader-v11/EURUSDScalperV11/EURUSDScalperV11.csproj
           echo "Project reconstructed:"
           find /tmp/ctrader-v11/EURUSDScalperV11 -maxdepth 1 -type f -printf "%f %s bytes\n"
 
