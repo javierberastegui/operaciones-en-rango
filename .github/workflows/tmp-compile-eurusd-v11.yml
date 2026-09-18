@@ -1,0 +1,59 @@
+name: Temp EURUSD V1.1 cTrader Compile
+
+on:
+  push:
+    branches:
+      - tmp/ctrader-eurusd-v11-build
+    paths:
+      - "tmp/eurusd-scalper-v11/**"
+      - ".github/workflows/tmp-compile-eurusd-v11.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Reconstruct project
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat tmp/eurusd-scalper-v11/part00.b64               tmp/eurusd-scalper-v11/part01.b64               tmp/eurusd-scalper-v11/part02.b64             | base64 -d > /tmp/EURUSDScalperV11-project.zip
+          mkdir -p /tmp/ctrader-v11
+          unzip -q /tmp/EURUSDScalperV11-project.zip -d /tmp/ctrader-v11
+          test -s /tmp/ctrader-v11/EURUSDScalperV11/EURUSDScalperV11.cs
+          test -s /tmp/ctrader-v11/EURUSDScalperV11/EURUSDScalperV11.csproj
+          echo "Project reconstructed:"
+          find /tmp/ctrader-v11/EURUSDScalperV11 -maxdepth 1 -type f -printf "%f %s bytes\n"
+
+      - name: Build cTrader algo
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/ctrader-v11/EURUSDScalperV11
+          dotnet restore EURUSDScalperV11.csproj
+          dotnet build EURUSDScalperV11.csproj             -c Release             -p:AlgoPublish=False             -p:IncludeSource=True
+          ALGO_PATH="$(find ./bin -type f -name '*.algo' | head -n 1)"
+          if [ -z "$ALGO_PATH" ]; then
+            echo "No .algo generated" >&2
+            find ./bin -type f -print || true
+            exit 1
+          fi
+          cp "$ALGO_PATH" "$GITHUB_WORKSPACE/EURUSD_SCALPER_V1_1.algo"
+          test -s "$GITHUB_WORKSPACE/EURUSD_SCALPER_V1_1.algo"
+          sha256sum "$GITHUB_WORKSPACE/EURUSD_SCALPER_V1_1.algo"
+          ls -lh "$GITHUB_WORKSPACE/EURUSD_SCALPER_V1_1.algo"
+
+      - name: Upload compiled algo
+        uses: actions/upload-artifact@v4
+        with:
+          name: EURUSD_SCALPER_V1_1-algo
+          path: EURUSD_SCALPER_V1_1.algo
+          if-no-files-found: error
