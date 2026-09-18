@@ -1,0 +1,27 @@
+name: Temp cTrader Compile
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "tmp/box-theory-sp500/**"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Build cTrader algo
+        run: |
+          dotnet restore tmp/box-theory-sp500/BoxTheorySP500.csproj
+          dotnet build tmp/box-theory-sp500/BoxTheorySP500.csproj -c Release -p:AlgoPublish=false -p:IncludeSource=true
+          find tmp/box-theory-sp500 -type f -name "*.algo" -print
+      - name: Upload algo
+        uses: actions/upload-artifact@v4
+        with:
+          name: BoxTheorySP500-algo
+          path: tmp/box-theory-sp500/**/*.algo
+          if-no-files-found: error
