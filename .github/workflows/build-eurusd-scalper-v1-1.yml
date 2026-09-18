@@ -1,0 +1,26 @@
+name: Build EURUSD Scalper V1.1
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Restore
+        run: dotnet restore build/eurusd-scalper-v1-1/EURUSDScalperV11.csproj
+      - name: Build cTrader algo
+        run: dotnet build build/eurusd-scalper-v1-1/EURUSDScalperV11.csproj -c Release --no-restore
+      - name: Locate algo
+        run: find build/eurusd-scalper-v1-1 -type f -name '*.algo' -print
+      - name: Upload algo
+        uses: actions/upload-artifact@v4
+        with:
+          name: EURUSDScalperV11-algo
+          path: build/eurusd-scalper-v1-1/**/EURUSDScalperV11.algo
+          if-no-files-found: error
