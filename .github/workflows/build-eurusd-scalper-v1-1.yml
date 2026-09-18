@@ -16,11 +16,16 @@ jobs:
         run: dotnet restore build/eurusd-scalper-v1-1/EURUSDScalperV11.csproj
       - name: Build cTrader algo
         run: dotnet build build/eurusd-scalper-v1-1/EURUSDScalperV11.csproj -c Release --no-restore
-      - name: Locate algo
-        run: find build/eurusd-scalper-v1-1 -type f -name '*.algo' -print
+      - name: Prepare named algo
+        run: |
+          ALGO="$(find build/eurusd-scalper-v1-1 -type f -name '*.algo' -print -quit)"
+          test -n "$ALGO"
+          cp "$ALGO" /tmp/EURUSDScalperV11.algo
+          ls -lh /tmp/EURUSDScalperV11.algo
+          sha256sum /tmp/EURUSDScalperV11.algo
       - name: Upload algo
         uses: actions/upload-artifact@v4
         with:
           name: EURUSDScalperV11-algo
-          path: build/eurusd-scalper-v1-1/**/EURUSDScalperV11.algo
+          path: /tmp/EURUSDScalperV11.algo
           if-no-files-found: error
