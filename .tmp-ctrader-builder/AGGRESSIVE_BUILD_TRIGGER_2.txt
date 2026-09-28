@@ -1,0 +1,1 @@
+Trigger aggressive VWAP cTrader build with diagnostics.
